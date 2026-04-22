@@ -11,8 +11,8 @@ interface CredentialsGateProps {
 
 const defaults: PlaylistCredentials = {
   server: "http://xtvip.net",
-  username: "Adham28910",
-  password: "3793019",
+  username: "",
+  password: "",
 };
 
 export default function CredentialsGate({
@@ -87,7 +87,7 @@ export default function CredentialsGate({
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="Adham28910"
+              placeholder="Enter username"
             />
           </label>
 
@@ -96,7 +96,7 @@ export default function CredentialsGate({
             <input
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="3793019"
+              placeholder="Enter password"
               type="password"
             />
           </label>
