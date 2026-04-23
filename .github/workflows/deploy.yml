@@ -14,11 +14,15 @@ concurrency:
   group: "pages"
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   deploy:
+    timeout-minutes: 25
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     runs-on: ubuntu-latest
     env:
       VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
@@ -34,7 +38,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
       - name: Validate Firebase environment variables
         run: |
@@ -59,7 +63,7 @@ jobs:
             exit 1
           fi
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Build
         run: npm run build
       - name: Setup Pages
@@ -68,6 +72,18 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: './dist'
-      - name: Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages (Attempt 1)
         id: deployment
+        continue-on-error: true
         uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages (Retry)
+        id: deployment_retry
+        if: ${{ steps.deployment.outcome == 'failure' }}
+        uses: actions/deploy-pages@v4
+      - name: Verify deployment result
+        if: ${{ always() }}
+        run: |
+          if [ "${{ steps.deployment.outcome }}" = "failure" ] && [ "${{ steps.deployment_retry.outcome }}" = "failure" ]; then
+            echo "::error::GitHub Pages deployment failed in both attempts."
+            exit 1
+          fi
