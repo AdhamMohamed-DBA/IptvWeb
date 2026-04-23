@@ -10,7 +10,7 @@ interface CredentialsGateProps {
 }
 
 const defaults: PlaylistCredentials = {
-  server: "http://xtvip.net",
+  server: "",
   username: "",
   password: "",
 };
@@ -18,7 +18,6 @@ const defaults: PlaylistCredentials = {
 export default function CredentialsGate({
   uid,
   initialCredentials,
-  loadingAuth,
   onSaved,
 }: CredentialsGateProps) {
   const initial = useMemo(
@@ -78,7 +77,7 @@ export default function CredentialsGate({
             <input
               value={server}
               onChange={(event) => setServer(event.target.value)}
-              placeholder="http://xtvip.net"
+              placeholder="Enter server URL"
             />
           </label>
 
@@ -101,7 +100,7 @@ export default function CredentialsGate({
             />
           </label>
 
-          <button type="submit" disabled={saving || loadingAuth || !uid}>
+          <button type="submit" disabled={saving}>
             {saving ? "Saving..." : "Save and Load App"}
           </button>
         </form>
