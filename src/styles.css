@@ -335,6 +335,20 @@ a {
   font-weight: 600;
 }
 
+.gate-actions {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.gate-retry {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.gate-retry:disabled {
+  opacity: 0.7;
+}
+
 .gate-form button:disabled {
   opacity: 0.6;
   cursor: default;

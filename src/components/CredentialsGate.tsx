@@ -6,10 +6,13 @@ interface CredentialsGateProps {
   uid?: string;
   initialCredentials?: PlaylistCredentials;
   loadingAuth: boolean;
+  authError?: string;
+  onRetryAuth?: () => Promise<void> | void;
   onSaved: (credentials: PlaylistCredentials) => void;
 }
 
 const defaults: PlaylistCredentials = {
+  nickname: "",
   server: "",
   username: "",
   password: "",
@@ -19,6 +22,8 @@ export default function CredentialsGate({
   uid,
   initialCredentials,
   loadingAuth,
+  authError,
+  onRetryAuth,
   onSaved,
 }: CredentialsGateProps) {
   const initial = useMemo(
@@ -26,26 +31,31 @@ export default function CredentialsGate({
     [initialCredentials],
   );
 
+  const [nickname, setNickname] = useState(initial.nickname || "");
   const [server, setServer] = useState(initial.server);
   const [username, setUsername] = useState(initial.username);
   const [password, setPassword] = useState(initial.password);
   const [saving, setSaving] = useState(false);
+  const [retryingAuth, setRetryingAuth] = useState(false);
   const [error, setError] = useState<string>();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
 
-    if (!uid) {
-      if (loadingAuth) {
-        setError("Preparing your session... please wait a moment.");
-      } else {
-        setError("Unable to start session now. Please try again.");
-      }
+    if (loadingAuth) {
+      setError("Preparing your session... please wait a moment.");
       return;
     }
 
+    if (!uid) {
+      setError(authError || "Unable to start session now. Please retry session.");
+      return;
+    }
+
+    const cleanNickname = nickname.trim();
     const credentials: PlaylistCredentials = {
+      nickname: cleanNickname || undefined,
       server: server.trim().replace(/\/$/, ""),
       username: username.trim(),
       password: password.trim(),
@@ -67,6 +77,22 @@ export default function CredentialsGate({
     }
   }
 
+  async function handleRetryAuth() {
+    if (!onRetryAuth || retryingAuth) return;
+
+    setError(undefined);
+    try {
+      setRetryingAuth(true);
+      await onRetryAuth();
+    } catch (err: any) {
+      setError(err?.message || "Failed to retry session.");
+    } finally {
+      setRetryingAuth(false);
+    }
+  }
+
+  const submitDisabled = saving || loadingAuth;
+
   return (
     <div className="gate-wrapper">
       <div className="gate-card">
@@ -77,6 +103,15 @@ export default function CredentialsGate({
         </p>
 
         <form className="gate-form" onSubmit={handleSubmit}>
+          <label>
+            Playlist Nickname (optional)
+            <input
+              value={nickname}
+              onChange={(event) => setNickname(event.target.value)}
+              placeholder="Ex: Home / Living Room"
+            />
+          </label>
+
           <label>
             Server URL
             <input
@@ -105,16 +140,29 @@ export default function CredentialsGate({
             />
           </label>
 
-          <button type="submit" disabled={saving || loadingAuth || !uid}>
-            {saving
-              ? "Saving..."
-              : loadingAuth || !uid
-                ? "Preparing session..."
-                : "Save and Load App"}
-          </button>
+          <div className="gate-actions">
+            <button type="submit" disabled={submitDisabled}>
+              {saving
+                ? "Saving..."
+                : loadingAuth
+                  ? "Preparing session..."
+                  : "Save and Load App"}
+            </button>
+
+            {!uid && !loadingAuth ? (
+              <button
+                type="button"
+                className="gate-retry"
+                onClick={handleRetryAuth}
+                disabled={retryingAuth}
+              >
+                {retryingAuth ? "Retrying..." : "Retry Session"}
+              </button>
+            ) : null}
+          </div>
         </form>
 
-        {error ? <div className="error-box">{error}</div> : null}
+        {error || authError ? <div className="error-box">{error || authError}</div> : null}
       </div>
     </div>
   );

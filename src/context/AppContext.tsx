@@ -27,6 +27,8 @@ const emptyLibrary: UserLibrary = {
 interface AppContextValue {
   uid?: string;
   loadingAuth: boolean;
+  authError?: string;
+  retryAuth: () => Promise<void>;
   library: UserLibrary;
   isFavorite: (itemId: string) => boolean;
   toggleFavoriteItem: (item: ContentItem) => Promise<void>;
@@ -43,11 +45,16 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [uid, setUid] = useState<string>();
   const [loadingAuth, setLoadingAuth] = useState(true);
+  const [authError, setAuthError] = useState<string>();
   const [library, setLibrary] = useState<UserLibrary>(emptyLibrary);
+  const [authVersion, setAuthVersion] = useState(0);
 
   useEffect(() => {
     let unsubscribeDb = () => {};
     let mounted = true;
+
+    setLoadingAuth(true);
+    setAuthError(undefined);
 
     ensureAnonymousAuth()
       .then(async (user) => {
@@ -61,6 +68,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       .catch((error) => {
         console.error("Auth init failed", error);
+        if (!mounted) return;
+
+        setUid(undefined);
+        setLibrary(emptyLibrary);
+        setAuthError(error?.message || "Failed to initialize authentication session.");
       })
       .finally(() => {
         if (mounted) setLoadingAuth(false);
@@ -70,6 +82,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       mounted = false;
       unsubscribeDb();
     };
+  }, [authVersion]);
+
+  const retryAuth = useCallback(async () => {
+    setAuthVersion((value) => value + 1);
   }, []);
 
   const isFavorite = useCallback(
@@ -107,6 +123,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       uid,
       loadingAuth,
+      authError,
+      retryAuth,
       library,
       isFavorite,
       toggleFavoriteItem,
@@ -116,6 +134,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       uid,
       loadingAuth,
+      authError,
+      retryAuth,
       library,
       isFavorite,
       toggleFavoriteItem,

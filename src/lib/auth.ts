@@ -5,23 +5,58 @@ import {
 } from "firebase/auth";
 import { auth } from "./firebase";
 
-export function ensureAnonymousAuth(): Promise<User> {
+export function ensureAnonymousAuth(timeoutMs = 15000): Promise<User> {
   return new Promise((resolve, reject) => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      try {
-        if (user) {
-          unsubscribe();
-          resolve(user);
-          return;
-        }
+    let settled = false;
+    let unsubscribe = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-        const cred = await signInAnonymously(auth);
-        unsubscribe();
-        resolve(cred.user);
-      } catch (error) {
-        unsubscribe();
-        reject(error);
-      }
-    });
+    const resolveOnce = (user: User) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+      resolve(user);
+    };
+
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+      reject(
+        error instanceof Error
+          ? error
+          : new Error("Failed to initialize authentication session."),
+      );
+    };
+
+    timer = setTimeout(() => {
+      rejectOnce(
+        new Error(
+          "Authentication session timed out. Check internet/Firebase config and retry.",
+        ),
+      );
+    }, timeoutMs);
+
+    unsubscribe = onAuthStateChanged(
+      auth,
+      async (user) => {
+        try {
+          if (user) {
+            resolveOnce(user);
+            return;
+          }
+
+          const cred = await signInAnonymously(auth);
+          resolveOnce(cred.user);
+        } catch (error) {
+          rejectOnce(error);
+        }
+      },
+      (error) => {
+        rejectOnce(error);
+      },
+    );
   });
 }

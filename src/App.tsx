@@ -12,7 +12,7 @@ import PlayerPage from "./pages/PlayerPage";
 import SeriesDetailsPage from "./pages/SeriesDetailsPage";
 
 function AppShell() {
-  const { uid, loadingAuth, library } = useAppContext();
+  const { uid, loadingAuth, authError, retryAuth, library } = useAppContext();
   const [search, setSearch] = useState("");
   const [savedLocally, setSavedLocally] = useState(false);
 
@@ -27,6 +27,8 @@ function AppShell() {
       <CredentialsGate
         uid={uid}
         loadingAuth={loadingAuth}
+        authError={authError}
+        onRetryAuth={retryAuth}
         initialCredentials={library.settings?.playlist}
         onSaved={() => {
           setSavedLocally(true);

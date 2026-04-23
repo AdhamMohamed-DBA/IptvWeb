@@ -98,8 +98,11 @@ export async function savePlaylistCredentials(
   credentials: PlaylistCredentials,
 ) {
   const node = ref(db, `users/${uid}/settings/playlist`);
+  const nickname = credentials.nickname?.trim();
+
   await set(node, {
     ...credentials,
+    nickname: nickname || null,
     updatedAt: Date.now(),
   });
 }
@@ -117,10 +120,12 @@ export async function getPlaylistCredentials(
   }
 
   return {
+    nickname: typeof value.nickname === "string" ? value.nickname : undefined,
     server: value.server,
     username: value.username,
     password: value.password,
   };
 }
+
 
 

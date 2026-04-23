@@ -2,6 +2,7 @@ export type CatalogType = "live" | "movie" | "series";
 export type StreamType = CatalogType | "episode";
 
 export interface PlaylistCredentials {
+  nickname?: string;
   server: string;
   username: string;
   password: string;
