@@ -1,5 +1,6 @@
 import type { CatalogType, Category, ContentItem, EpgProgram, SeriesInfo } from "../types";
 import { auth } from "./firebase";
+import { ensureAnonymousAuth } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 const REQUEST_TIMEOUT_MS = 15000;
@@ -24,6 +25,11 @@ function inferCloudFunctionBase(): string | undefined {
 const REQUEST_BASES = (() => {
   const configured = trimTrailingSlash(API_BASE);
   const cloud = inferCloudFunctionBase();
+  const isRelativeConfigured = configured.startsWith("/");
+
+  if (isGithubPagesHost() && isRelativeConfigured && cloud) {
+    return [cloud];
+  }
 
   if (cloud && isGithubPagesHost() && configured !== cloud) {
     return [cloud, configured];
@@ -115,8 +121,17 @@ async function requestFromBase<T>(
 
 async function request<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
-  if (auth.currentUser) {
-    const token = await auth.currentUser.getIdToken();
+  let user = auth.currentUser;
+  if (!user) {
+    try {
+      user = await ensureAnonymousAuth(8000);
+    } catch {
+      user = auth.currentUser;
+    }
+  }
+
+  if (user) {
+    const token = await user.getIdToken();
     headers.Authorization = `Bearer ${token}`;
   }
 
