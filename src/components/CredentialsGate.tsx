@@ -96,6 +96,7 @@ export default function CredentialsGate({
   const [server, setServer] = useState(defaults.server);
   const [username, setUsername] = useState(defaults.username);
   const [password, setPassword] = useState(defaults.password);
+  const [editingPlaylistId, setEditingPlaylistId] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [retryingAuth, setRetryingAuth] = useState(false);
   const [error, setError] = useState<string>();
@@ -103,15 +104,49 @@ export default function CredentialsGate({
   useEffect(() => {
     if (playlists.length === 0) {
       setMode("add");
+      setEditingPlaylistId(undefined);
       return;
     }
 
-    setMode("list");
+    setMode((current) => (current === "add" ? "add" : "list"));
   }, [playlists.length]);
 
   const mustStayOpen = !canClose && playlists.length === 0;
   const showAddForm = mode === "add" || playlists.length === 0;
   const disableActions = saving || loadingAuth;
+  const isEditMode = Boolean(editingPlaylistId);
+
+  function fillFormFromPlaylist(playlist: StoredPlaylist) {
+    setNickname(playlist.nickname || "");
+    setServer(playlist.server || "");
+    setUsername(playlist.username || "");
+    setPassword(playlist.password || "");
+  }
+
+  function resetForm() {
+    setEditingPlaylistId(undefined);
+    setNickname("");
+    setServer("");
+    setUsername("");
+    setPassword("");
+  }
+
+  function startAddMode() {
+    resetForm();
+    setMode("add");
+  }
+
+  function startEditMode(option: PlaylistOption) {
+    setError(undefined);
+    setEditingPlaylistId(option.id);
+    fillFormFromPlaylist(option.playlist);
+    setMode("add");
+  }
+
+  function backToListMode() {
+    resetForm();
+    setMode("list");
+  }
 
   function closeIfAllowed() {
     if (mustStayOpen) return;
@@ -163,6 +198,11 @@ export default function CredentialsGate({
       const readyUid = await ensureReadySession();
       setSaving(true);
       await deletePlaylist(readyUid, option.id);
+
+      if (editingPlaylistId === option.id) {
+        resetForm();
+      }
+
       onPlaylistChanged?.();
     } catch (err: any) {
       setError(err?.message || "Failed to delete playlist.");
@@ -190,13 +230,10 @@ export default function CredentialsGate({
     try {
       const readyUid = await ensureReadySession();
       setSaving(true);
-      await savePlaylistCredentials(readyUid, credentials);
+      await savePlaylistCredentials(readyUid, credentials, editingPlaylistId);
 
+      resetForm();
       setMode("list");
-      setNickname("");
-      setServer("");
-      setUsername("");
-      setPassword("");
 
       onPlaylistChanged?.();
       closeIfAllowed();
@@ -253,6 +290,15 @@ export default function CredentialsGate({
                     onClick={() => handleUsePlaylist(item)}
                   >
                     {item.isActive ? "Continue" : "Use this playlist"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="gate-secondary"
+                    disabled={disableActions}
+                    onClick={() => startEditMode(item)}
+                  >
+                    Edit
                   </button>
 
                   <button
@@ -314,7 +360,9 @@ export default function CredentialsGate({
                   ? "Saving..."
                   : loadingAuth
                     ? "Preparing session..."
-                    : "Save and Use Playlist"}
+                    : isEditMode
+                      ? "Update Playlist"
+                      : "Save and Use Playlist"}
               </button>
             </form>
           ) : null}
@@ -325,19 +373,32 @@ export default function CredentialsGate({
                 type="button"
                 className="gate-secondary"
                 disabled={disableActions}
-                onClick={() => setMode("add")}
+                onClick={startAddMode}
               >
                 + Add New Playlist
               </button>
             ) : playlists.length > 0 ? (
-              <button
-                type="button"
-                className="gate-secondary"
-                disabled={disableActions}
-                onClick={() => setMode("list")}
-              >
-                Back to Playlists
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="gate-secondary"
+                  disabled={disableActions}
+                  onClick={backToListMode}
+                >
+                  Back to Playlists
+                </button>
+
+                {isEditMode ? (
+                  <button
+                    type="button"
+                    className="gate-secondary"
+                    disabled={disableActions}
+                    onClick={startAddMode}
+                  >
+                    + New Instead
+                  </button>
+                ) : null}
+              </>
             ) : null}
 
             {canClose ? (

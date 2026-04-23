@@ -2,9 +2,17 @@ import type { CatalogType, Category, ContentItem, EpgProgram, SeriesInfo } from 
 import { auth } from "./firebase";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_RETRIES_PER_BASE = 2;
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/$/, "");
+}
+
+function isGithubPagesHost(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.location.hostname.endsWith("github.io");
 }
 
 function inferCloudFunctionBase(): string | undefined {
@@ -16,12 +24,94 @@ function inferCloudFunctionBase(): string | undefined {
 const REQUEST_BASES = (() => {
   const configured = trimTrailingSlash(API_BASE);
   const cloud = inferCloudFunctionBase();
+
+  if (cloud && isGithubPagesHost() && configured !== cloud) {
+    return [cloud, configured];
+  }
+
   if (!cloud || configured === cloud) {
     return [configured];
   }
 
   return [configured, cloud];
 })();
+
+function readableBase(base: string): string {
+  if (base.startsWith("http")) return base;
+  if (typeof window === "undefined") return base;
+  return `${window.location.origin}${base}`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function fetchWithTimeout(url: string, headers: Record<string, string>) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, {
+      headers,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestFromBase<T>(
+  base: string,
+  path: string,
+  headers: Record<string, string>,
+): Promise<T> {
+  const url = `${base}${path}`;
+
+  for (let attempt = 1; attempt <= REQUEST_RETRIES_PER_BASE; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, headers);
+      if (!response.ok) {
+        const retryable = RETRYABLE_STATUS.has(response.status);
+        if (retryable && attempt < REQUEST_RETRIES_PER_BASE) {
+          await sleep(250 * attempt);
+          continue;
+        }
+
+        throw new Error(
+          `API error ${response.status} while requesting ${path} via ${readableBase(base)}`,
+        );
+      }
+
+      return response.json();
+    } catch (error: any) {
+      const name = typeof error?.name === "string" ? error.name : "";
+      const message = error instanceof Error ? error.message : String(error);
+      const isAbort = name === "AbortError";
+      const isNetworkError =
+        isAbort || /Failed to fetch|NetworkError|Load failed|fetch failed/i.test(message);
+
+      if (isNetworkError && attempt < REQUEST_RETRIES_PER_BASE) {
+        await sleep(250 * attempt);
+        continue;
+      }
+
+      if (isNetworkError) {
+        const reason = isAbort ? "request timeout" : "network/CORS error";
+        throw new Error(
+          `Failed to reach API at ${readableBase(base)} (${reason}). Check Cloud Functions deployment and CORS.`,
+        );
+      }
+
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw new Error(`Failed requesting ${path} via ${readableBase(base)}`);
+}
 
 async function request<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
@@ -30,33 +120,21 @@ async function request<T>(path: string): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  let lastError: Error | undefined;
-  for (let index = 0; index < REQUEST_BASES.length; index += 1) {
-    const base = REQUEST_BASES[index];
-
+  const failures: string[] = [];
+  for (const base of REQUEST_BASES) {
     try {
-      const response = await fetch(`${base}${path}`, { headers });
-      if (!response.ok) {
-        const isNotFound = response.status === 404;
-        const isLast = index === REQUEST_BASES.length - 1;
-        if (isNotFound && !isLast) {
-          continue;
-        }
-
-        throw new Error(`API error ${response.status} while requesting ${path}`);
-      }
-
-      return response.json();
+      return await requestFromBase<T>(base, path, headers);
     } catch (error: any) {
-      const isLast = index === REQUEST_BASES.length - 1;
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (!isLast) {
-        continue;
-      }
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(message);
     }
   }
 
-  throw lastError || new Error(`Failed requesting ${path}`);
+  if (failures.length === 0) {
+    throw new Error(`Failed requesting ${path}`);
+  }
+
+  throw new Error(failures[failures.length - 1]);
 }
 
 function normalizeImage(url?: string): string | undefined {
