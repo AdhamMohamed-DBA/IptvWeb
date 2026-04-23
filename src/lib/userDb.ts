@@ -12,6 +12,7 @@ import type {
   ContentItem,
   ContinueWatchingItem,
   PlaylistCredentials,
+  StoredPlaylist,
   UserLibrary,
 } from "../types";
 
@@ -21,6 +22,54 @@ function userRoot(uid: string) {
 
 function itemPath(uid: string, collection: string, itemId: string) {
   return ref(db, `users/${uid}/${collection}/${itemId}`);
+}
+
+function settingsPath(uid: string) {
+  return ref(db, `users/${uid}/settings`);
+}
+
+function normalizeCredentials(credentials: PlaylistCredentials): PlaylistCredentials {
+  const nickname = credentials.nickname?.trim();
+  return {
+    nickname: nickname || undefined,
+    server: credentials.server.trim().replace(/\/$/, ""),
+    username: credentials.username.trim(),
+    password: credentials.password.trim(),
+  };
+}
+
+function isValidCredentials(value: any): boolean {
+  return Boolean(value?.server && value?.username && value?.password);
+}
+
+function toStoredPlaylist(value: any): StoredPlaylist | null {
+  if (!isValidCredentials(value)) return null;
+
+  const raw = value as any;
+
+  return {
+    nickname: typeof raw.nickname === "string" ? raw.nickname : undefined,
+    server: String(raw.server).trim().replace(/\/$/, ""),
+    username: String(raw.username).trim(),
+    password: String(raw.password).trim(),
+    createdAt: typeof raw.createdAt === "number" ? raw.createdAt : undefined,
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : undefined,
+  };
+}
+
+function toLegacyPlaylistPayload(credentials: PlaylistCredentials, updatedAt: number) {
+  const nickname = credentials.nickname?.trim();
+  return {
+    server: credentials.server,
+    username: credentials.username,
+    password: credentials.password,
+    nickname: nickname || null,
+    updatedAt,
+  };
+}
+
+function playlistId() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function subscribeUserLibrary(
@@ -96,36 +145,125 @@ export async function touchUser(uid: string) {
 export async function savePlaylistCredentials(
   uid: string,
   credentials: PlaylistCredentials,
-) {
-  const node = ref(db, `users/${uid}/settings/playlist`);
-  const nickname = credentials.nickname?.trim();
+  existingPlaylistId?: string,
+): Promise<string> {
+  const clean = normalizeCredentials(credentials);
+  if (!clean.server || !clean.username || !clean.password) {
+    throw new Error("Please fill server, username and password.");
+  }
 
-  await set(node, {
-    ...credentials,
-    nickname: nickname || null,
-    updatedAt: Date.now(),
+  const id = existingPlaylistId || playlistId();
+  const settings = settingsPath(uid);
+  const existingSnap = await get(ref(db, `users/${uid}/settings/playlists/${id}`));
+  const existing = toStoredPlaylist(existingSnap.val());
+  const now = Date.now();
+
+  await set(ref(db, `users/${uid}/settings/playlists/${id}`), {
+    server: clean.server,
+    username: clean.username,
+    password: clean.password,
+    nickname: clean.nickname || null,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
   });
+
+  await update(settings, {
+    activePlaylistId: id,
+    playlist: toLegacyPlaylistPayload(clean, now),
+  });
+
+  return id;
+}
+
+export async function setActivePlaylist(uid: string, playlistIdValue: string) {
+  const playlistSnap = await get(ref(db, `users/${uid}/settings/playlists/${playlistIdValue}`));
+  const playlist = toStoredPlaylist(playlistSnap.val());
+  if (!playlist) {
+    throw new Error("Playlist not found.");
+  }
+
+  await update(settingsPath(uid), {
+    activePlaylistId: playlistIdValue,
+    playlist: toLegacyPlaylistPayload(playlist, Date.now()),
+  });
+}
+
+export async function deletePlaylist(uid: string, playlistIdValue: string) {
+  const settingsRef = settingsPath(uid);
+  const snapshot = await get(settingsRef);
+  const settings = snapshot.val() || {};
+
+  if (playlistIdValue === "legacy") {
+    await update(settingsRef, {
+      playlist: null,
+      activePlaylistId: null,
+    });
+    return;
+  }
+
+  const rawPlaylists = settings.playlists || {};
+  const remaining = Object.entries(rawPlaylists)
+    .filter(([id]) => id !== playlistIdValue)
+    .map(([id, value]) => ({ id, playlist: toStoredPlaylist(value) }))
+    .filter((item): item is { id: string; playlist: StoredPlaylist } => Boolean(item.playlist))
+    .sort((a, b) => (b.playlist.updatedAt || 0) - (a.playlist.updatedAt || 0));
+
+  const updates: Record<string, unknown> = {
+    [`playlists/${playlistIdValue}`]: null,
+  };
+
+  const wasActive = settings.activePlaylistId === playlistIdValue;
+  if (wasActive) {
+    if (remaining.length > 0) {
+      const next = remaining[0];
+      updates.activePlaylistId = next.id;
+      updates.playlist = toLegacyPlaylistPayload(next.playlist, Date.now());
+    } else {
+      updates.activePlaylistId = null;
+      updates.playlist = null;
+    }
+  }
+
+  await update(settingsRef, updates);
 }
 
 export async function getPlaylistCredentials(
   uid: string,
 ): Promise<PlaylistCredentials | null> {
-  const node = ref(db, `users/${uid}/settings/playlist`);
-  const snapshot = await get(node);
-  if (!snapshot.exists()) return null;
+  const settingsSnapshot = await get(settingsPath(uid));
+  if (!settingsSnapshot.exists()) return null;
 
-  const value = snapshot.val();
-  if (!value?.server || !value?.username || !value?.password) {
-    return null;
+  const settings = settingsSnapshot.val() || {};
+  const rawPlaylists = settings.playlists || {};
+  const activeId = typeof settings.activePlaylistId === "string"
+    ? settings.activePlaylistId
+    : undefined;
+
+  const candidates: any[] = [];
+  if (activeId) {
+    candidates.push(rawPlaylists[activeId]);
   }
 
+  Object.values(rawPlaylists).forEach((value) => {
+    candidates.push(value);
+  });
+  candidates.push(settings.playlist);
+
+  const selected = candidates
+    .map((value) => toStoredPlaylist(value))
+    .find((value): value is StoredPlaylist => Boolean(value));
+
+  if (!selected) return null;
+
   return {
-    nickname: typeof value.nickname === "string" ? value.nickname : undefined,
-    server: value.server,
-    username: value.username,
-    password: value.password,
+    nickname: selected.nickname,
+    server: selected.server,
+    username: selected.username,
+    password: selected.password,
   };
 }
+
+
 
 
 

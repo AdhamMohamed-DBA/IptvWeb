@@ -8,8 +8,15 @@ export interface PlaylistCredentials {
   password: string;
 }
 
+export interface StoredPlaylist extends PlaylistCredentials {
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export interface UserSettings {
   playlist?: PlaylistCredentials;
+  playlists?: Record<string, StoredPlaylist | undefined>;
+  activePlaylistId?: string;
 }
 
 export interface Category {

@@ -28,20 +28,39 @@ async function getUidFromReq(req) {
 }
 
 async function getPlaylistCredentials(uid) {
-  const snap = await db.ref(`users/${uid}/settings/playlist`).get();
-  if (!snap.exists()) {
+  const settingsSnap = await db.ref(`users/${uid}/settings`).get();
+  if (!settingsSnap.exists()) {
     throw new Error("Playlist credentials are not saved yet");
   }
 
-  const value = snap.val() || {};
-  if (!value.server || !value.username || !value.password) {
+  const settings = settingsSnap.val() || {};
+  const playlists = settings.playlists || {};
+
+  const candidates = [];
+  if (settings.activePlaylistId && playlists[settings.activePlaylistId]) {
+    candidates.push(playlists[settings.activePlaylistId]);
+  }
+
+  Object.values(playlists).forEach((playlist) => {
+    candidates.push(playlist);
+  });
+
+  if (settings.playlist) {
+    candidates.push(settings.playlist);
+  }
+
+  const selected = candidates.find((item) => {
+    return item && item.server && item.username && item.password;
+  });
+
+  if (!selected) {
     throw new Error("Playlist credentials are incomplete");
   }
 
   return {
-    server: String(value.server).replace(/\/$/, ""),
-    username: String(value.username),
-    password: String(value.password),
+    server: String(selected.server).replace(/\/$/, ""),
+    username: String(selected.username),
+    password: String(selected.password),
   };
 }
 

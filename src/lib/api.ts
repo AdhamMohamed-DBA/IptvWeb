@@ -3,6 +3,26 @@ import { auth } from "./firebase";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/$/, "");
+}
+
+function inferCloudFunctionBase(): string | undefined {
+  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  if (!projectId) return undefined;
+  return `https://europe-west1-${projectId}.cloudfunctions.net/api`;
+}
+
+const REQUEST_BASES = (() => {
+  const configured = trimTrailingSlash(API_BASE);
+  const cloud = inferCloudFunctionBase();
+  if (!cloud || configured === cloud) {
+    return [configured];
+  }
+
+  return [configured, cloud];
+})();
+
 async function request<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
   if (auth.currentUser) {
@@ -10,12 +30,33 @@ async function request<T>(path: string): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE}${path}`, { headers });
-  if (!response.ok) {
-    throw new Error(`API error ${response.status} while requesting ${path}`);
+  let lastError: Error | undefined;
+  for (let index = 0; index < REQUEST_BASES.length; index += 1) {
+    const base = REQUEST_BASES[index];
+
+    try {
+      const response = await fetch(`${base}${path}`, { headers });
+      if (!response.ok) {
+        const isNotFound = response.status === 404;
+        const isLast = index === REQUEST_BASES.length - 1;
+        if (isNotFound && !isLast) {
+          continue;
+        }
+
+        throw new Error(`API error ${response.status} while requesting ${path}`);
+      }
+
+      return response.json();
+    } catch (error: any) {
+      const isLast = index === REQUEST_BASES.length - 1;
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (!isLast) {
+        continue;
+      }
+    }
   }
 
-  return response.json();
+  throw lastError || new Error(`Failed requesting ${path}`);
 }
 
 function normalizeImage(url?: string): string | undefined {

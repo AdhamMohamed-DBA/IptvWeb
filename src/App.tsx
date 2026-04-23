@@ -14,27 +14,52 @@ import SeriesDetailsPage from "./pages/SeriesDetailsPage";
 function AppShell() {
   const { uid, loadingAuth, authError, retryAuth, library } = useAppContext();
   const [search, setSearch] = useState("");
-  const [savedLocally, setSavedLocally] = useState(false);
+  const [showPlaylistManager, setShowPlaylistManager] = useState(true);
 
   const debouncedSearch = useDebouncedValue(search, 250);
-  const hasCredentials = useMemo(
-    () => Boolean(library.settings?.playlist) || savedLocally,
-    [library.settings?.playlist, savedLocally],
+
+  const normalizedPlaylists = useMemo(() => {
+    const entries = Object.entries(library.settings?.playlists || {});
+    return entries.filter(([, value]) => {
+      return Boolean(value?.server && value?.username && value?.password);
+    });
+  }, [library.settings?.playlists]);
+
+  const hasLegacyPlaylist = useMemo(() => {
+    const legacy = library.settings?.playlist;
+    return Boolean(legacy?.server && legacy?.username && legacy?.password);
+  }, [library.settings?.playlist]);
+
+  const hasCredentials = normalizedPlaylists.length > 0 || hasLegacyPlaylist;
+
+  const topbarAction = hasCredentials
+    ? {
+        label: "Playlists",
+        onClick: () => setShowPlaylistManager(true),
+      }
+    : undefined;
+
+  const gateElement = (
+    <CredentialsGate
+      uid={uid}
+      settings={library.settings}
+      loadingAuth={loadingAuth}
+      authError={authError}
+      onRetryAuth={retryAuth}
+      canClose={hasCredentials}
+      onClose={() => setShowPlaylistManager(false)}
+      onPlaylistChanged={() => {
+        setShowPlaylistManager(false);
+      }}
+    />
   );
 
   if (!hasCredentials) {
-    return (
-      <CredentialsGate
-        uid={uid}
-        loadingAuth={loadingAuth}
-        authError={authError}
-        onRetryAuth={retryAuth}
-        initialCredentials={library.settings?.playlist}
-        onSaved={() => {
-          setSavedLocally(true);
-        }}
-      />
-    );
+    return gateElement;
+  }
+
+  if (showPlaylistManager) {
+    return gateElement;
   }
 
   return (
@@ -42,8 +67,12 @@ function AppShell() {
       <Sidebar />
 
       <div className="app-main">
-        <Topbar uid={uid} value={search} onSearch={setSearch} />
-
+        <Topbar
+          uid={uid}
+          value={search}
+          onSearch={setSearch}
+          action={topbarAction}
+        />
         <div className="content-scroll">
           <Routes>
             <Route path="/" element={<HomePage searchQuery={debouncedSearch} />} />
