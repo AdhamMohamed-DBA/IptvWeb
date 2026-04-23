@@ -18,6 +18,7 @@ const defaults: PlaylistCredentials = {
 export default function CredentialsGate({
   uid,
   initialCredentials,
+  loadingAuth,
   onSaved,
 }: CredentialsGateProps) {
   const initial = useMemo(
@@ -36,7 +37,11 @@ export default function CredentialsGate({
     setError(undefined);
 
     if (!uid) {
-      setError("Waiting for auth session. Please try again.");
+      if (loadingAuth) {
+        setError("Preparing your session... please wait a moment.");
+      } else {
+        setError("Unable to start session now. Please try again.");
+      }
       return;
     }
 
@@ -100,8 +105,12 @@ export default function CredentialsGate({
             />
           </label>
 
-          <button type="submit" disabled={saving}>
-            {saving ? "Saving..." : "Save and Load App"}
+          <button type="submit" disabled={saving || loadingAuth || !uid}>
+            {saving
+              ? "Saving..."
+              : loadingAuth || !uid
+                ? "Preparing session..."
+                : "Save and Load App"}
           </button>
         </form>
 
