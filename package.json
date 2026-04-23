@@ -13,6 +13,7 @@
     "deploy:functions": "firebase deploy --only functions"
   },
   "dependencies": {
+    "firebase-admin": "^12.7.0",
     "firebase": "^11.6.1",
     "hls.js": "^1.5.18",
     "react": "^18.3.1",

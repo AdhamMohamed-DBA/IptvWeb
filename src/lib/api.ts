@@ -3,46 +3,37 @@ import { auth } from "./firebase";
 import { ensureAnonymousAuth } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
-const REQUEST_TIMEOUT_MS = 15000;
-const REQUEST_RETRIES_PER_BASE = 2;
+const REQUEST_TIMEOUT_MS = 25000;
+const REQUEST_RETRIES_PER_BASE = 3;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/$/, "");
+function normalizeBase(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "/api";
+  const noTrailing = trimmed.replace(/\/+$/, "");
+  return noTrailing || "/";
 }
 
-function isGithubPagesHost(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.location.hostname.endsWith("github.io");
+const REQUEST_BASE = normalizeBase(API_BASE);
+
+function joinUrl(base: string, path: string): string {
+  if (base.endsWith("/") && path.startsWith("/")) {
+    return `${base}${path.slice(1)}`;
+  }
+
+  if (!base.endsWith("/") && !path.startsWith("/")) {
+    return `${base}/${path}`;
+  }
+
+  return `${base}${path}`;
 }
-
-function inferCloudFunctionBase(): string | undefined {
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  if (!projectId) return undefined;
-  return `https://europe-west1-${projectId}.cloudfunctions.net/api`;
-}
-
-const REQUEST_BASES = (() => {
-  const configured = trimTrailingSlash(API_BASE);
-  const cloud = inferCloudFunctionBase();
-  const isRelativeConfigured = configured.startsWith("/");
-
-  if (isGithubPagesHost() && isRelativeConfigured && cloud) {
-    return [cloud];
-  }
-
-  if (cloud && isGithubPagesHost() && configured !== cloud) {
-    return [cloud, configured];
-  }
-
-  if (!cloud || configured === cloud) {
-    return [configured];
-  }
-
-  return [configured, cloud];
-})();
 
 function readableBase(base: string): string {
+  if (base === "/") {
+    if (typeof window === "undefined") return "/";
+    return window.location.origin;
+  }
+
   if (base.startsWith("http")) return base;
   if (typeof window === "undefined") return base;
   return `${window.location.origin}${base}`;
@@ -75,7 +66,7 @@ async function requestFromBase<T>(
   path: string,
   headers: Record<string, string>,
 ): Promise<T> {
-  const url = `${base}${path}`;
+  const url = joinUrl(base, path);
 
   for (let attempt = 1; attempt <= REQUEST_RETRIES_PER_BASE; attempt += 1) {
     try {
@@ -108,7 +99,7 @@ async function requestFromBase<T>(
       if (isNetworkError) {
         const reason = isAbort ? "request timeout" : "network/CORS error";
         throw new Error(
-          `Failed to reach API at ${readableBase(base)} (${reason}). Check Cloud Functions deployment and CORS.`,
+          `Failed to reach API at ${readableBase(base)} (${reason}). Check API deployment and CORS/network settings.`,
         );
       }
 
@@ -135,21 +126,7 @@ async function request<T>(path: string): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const failures: string[] = [];
-  for (const base of REQUEST_BASES) {
-    try {
-      return await requestFromBase<T>(base, path, headers);
-    } catch (error: any) {
-      const message = error instanceof Error ? error.message : String(error);
-      failures.push(message);
-    }
-  }
-
-  if (failures.length === 0) {
-    throw new Error(`Failed requesting ${path}`);
-  }
-
-  throw new Error(failures[failures.length - 1]);
+  return requestFromBase<T>(REQUEST_BASE, path, headers);
 }
 
 function normalizeImage(url?: string): string | undefined {
