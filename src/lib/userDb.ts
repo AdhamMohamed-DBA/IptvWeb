@@ -28,6 +28,50 @@ function settingsPath(uid: string) {
   return ref(db, `users/${uid}/settings`);
 }
 
+function sanitizeFiniteNumber(value: unknown): number | undefined {
+  if (typeof value !== "number") return undefined;
+  if (!Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function sanitizeContentItem(item: ContentItem): ContentItem {
+  const payload: Partial<ContentItem> = {
+    id: String(item.id),
+    type: item.type,
+    title: item.title || "Untitled",
+  };
+
+  const optionalStringKeys: Array<keyof ContentItem> = [
+    "sourceId",
+    "poster",
+    "streamUrl",
+    "epgChannelId",
+    "categoryId",
+    "categoryName",
+    "plot",
+    "containerExtension",
+    "parentSeriesId",
+  ];
+
+  optionalStringKeys.forEach((key) => {
+    const value = item[key];
+    if (typeof value === "string" && value.length > 0) {
+      (payload as any)[key] = value;
+    }
+  });
+
+  const added = sanitizeFiniteNumber(item.added);
+  if (added !== undefined) payload.added = added;
+
+  const season = sanitizeFiniteNumber(item.season);
+  if (season !== undefined) payload.season = season;
+
+  const episodeNum = sanitizeFiniteNumber(item.episodeNum);
+  if (episodeNum !== undefined) payload.episodeNum = episodeNum;
+
+  return payload as ContentItem;
+}
+
 function normalizeCredentials(credentials: PlaylistCredentials): PlaylistCredentials {
   const nickname = credentials.nickname?.trim();
   return {
@@ -97,7 +141,7 @@ export async function toggleFavorite(uid: string, item: ContentItem, isFav: bool
   }
 
   await set(node, {
-    ...item,
+    ...sanitizeContentItem(item),
     updatedAt: Date.now(),
   });
 }
@@ -105,7 +149,7 @@ export async function toggleFavorite(uid: string, item: ContentItem, isFav: bool
 export async function addRecentlyWatched(uid: string, item: ContentItem) {
   const node = itemPath(uid, "recentlyWatched", item.id);
   await set(node, {
-    ...item,
+    ...sanitizeContentItem(item),
     updatedAt: Date.now(),
   });
 }
@@ -117,15 +161,17 @@ export async function updateContinueWatching(
   duration: number,
 ) {
   const node = itemPath(uid, "continueWatching", item.id);
-  const progress = duration > 0 ? Math.min(1, position / duration) : 0;
+  const safePosition = Number.isFinite(position) && position > 0 ? position : 0;
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const progress = safeDuration > 0 ? Math.min(1, safePosition / safeDuration) : 0;
 
   const payload: ContinueWatchingItem = {
-    ...item,
-    position,
-    duration,
+    ...sanitizeContentItem(item),
+    position: safePosition,
+    duration: safeDuration,
     progress,
     updatedAt: Date.now(),
-  };
+  } as ContinueWatchingItem;
 
   if (progress >= 0.98) {
     await remove(node);
@@ -281,6 +327,7 @@ export async function markCatalogRefreshRun(uid: string, timestamp = Date.now())
     catalogLastRefreshAt: timestamp,
   });
 }
+
 
 
 

@@ -52,6 +52,12 @@ function routeForPlayerItem(item: ContentItem) {
   return `/player/${item.id}`;
 }
 
+const CONTINUE_WATCHING_SAVE_INTERVAL_MS = 12000;
+const RECENTLY_WATCHED_LIVE_THRESHOLD_SEC = 20;
+const RECENTLY_WATCHED_VOD_THRESHOLD_SEC = 30;
+const HLS_NETWORK_RECOVERY_MAX = 2;
+const HLS_MEDIA_RECOVERY_MAX = 1;
+
 export default function PlayerPage() {
   const { itemId } = useParams();
   const location = useLocation();
@@ -88,7 +94,31 @@ export default function PlayerPage() {
 
     setError(undefined);
     let hls: Hls | null = null;
+    let hlsNetworkRecoveries = 0;
+    let hlsMediaRecoveries = 0;
+    let nativeFallbackTried = false;
+    let lastContinueWatchingSavedAt = 0;
+    let markedRecentlyWatched = false;
+
     const shouldUseHlsJs = isLikelyHlsUrl(streamUrl) && Hls.isSupported();
+    const supportsNativeHls =
+      isLikelyHlsUrl(streamUrl) &&
+      Boolean(video.canPlayType("application/vnd.apple.mpegurl"));
+
+    const tryMarkRecentlyWatched = (force = false) => {
+      if (!item || markedRecentlyWatched) return;
+
+      const thresholdSeconds =
+        item.type === "live"
+          ? RECENTLY_WATCHED_LIVE_THRESHOLD_SEC
+          : RECENTLY_WATCHED_VOD_THRESHOLD_SEC;
+      if (!force && video.currentTime < thresholdSeconds) {
+        return;
+      }
+
+      markedRecentlyWatched = true;
+      void markRecentlyWatched(item);
+    };
 
     const tryPlay = () => {
       const playResult = video.play();
@@ -105,11 +135,17 @@ export default function PlayerPage() {
       tryPlay();
     };
 
-    if (video.canPlayType("application/vnd.apple.mpegurl") && isLikelyHlsUrl(streamUrl)) {
+    if (supportsNativeHls) {
       setNativeSource();
     } else if (shouldUseHlsJs) {
       hls = new Hls({
         maxBufferLength: 30,
+        manifestLoadingMaxRetry: 6,
+        levelLoadingMaxRetry: 6,
+        fragLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingRetryDelay: 1000,
       });
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
@@ -119,26 +155,52 @@ export default function PlayerPage() {
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
-          setError(
-            `Playback error: ${data.details}. If this stream is HTTP-only, it will be blocked on secure pages unless routed through proxy.${maybeMixedContentMessage(
-              streamUrl,
-            )}`,
-          );
+        if (!data.fatal) {
+          return;
+        }
 
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && hls) {
+          if (hlsNetworkRecoveries < HLS_NETWORK_RECOVERY_MAX) {
+            hlsNetworkRecoveries += 1;
+            setError(`Stream network issue (${data.details}). Retrying...`);
             try {
-              hls?.recoverMediaError();
+              hls.startLoad();
               return;
             } catch {
-              // Fall through to full fallback.
+              // Continue to fallback path below.
             }
           }
+        }
 
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && hls) {
+          if (hlsMediaRecoveries < HLS_MEDIA_RECOVERY_MAX) {
+            hlsMediaRecoveries += 1;
+            setError(`Playback decode issue (${data.details}). Recovering...`);
+            try {
+              hls.recoverMediaError();
+              return;
+            } catch {
+              // Continue to fallback path below.
+            }
+          }
+        }
+
+        const errorMessage = `Playback error: ${data.details}. If this stream is HTTP-only, it will be blocked on secure pages unless routed through proxy.${maybeMixedContentMessage(
+          streamUrl,
+        )}`;
+
+        if (supportsNativeHls && !nativeFallbackTried) {
+          nativeFallbackTried = true;
+          setError(`${errorMessage} Trying native fallback...`);
           hls.destroy();
           hls = null;
           setNativeSource();
+          return;
         }
+
+        setError(errorMessage);
+        hls?.destroy();
+        hls = null;
       });
     } else {
       setNativeSource();
@@ -156,6 +218,11 @@ export default function PlayerPage() {
       setError(undefined);
     };
 
+    const onPlaying = () => {
+      setError(undefined);
+      tryMarkRecentlyWatched(false);
+    };
+
     const onVideoError = () => {
       setError(
         `${mediaErrorMessage(video)}. If this stream is HTTP-only, it may require proxy playback.${maybeMixedContentMessage(
@@ -165,29 +232,47 @@ export default function PlayerPage() {
     };
 
     const onTimeUpdate = () => {
-      if (!item || item.type === "live") return;
+      if (!item) return;
+      tryMarkRecentlyWatched(false);
+
+      if (item.type === "live") return;
+
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
       if (!duration) return;
+
+      const nowTs = Date.now();
+      if (nowTs - lastContinueWatchingSavedAt < CONTINUE_WATCHING_SAVE_INTERVAL_MS) {
+        return;
+      }
+
+      lastContinueWatchingSavedAt = nowTs;
       void saveContinueWatching(item, video.currentTime, duration);
     };
 
     const onEnded = () => {
       if (!item) return;
-      void markRecentlyWatched(item);
+
+      tryMarkRecentlyWatched(true);
       if (item.type !== "live") {
         void saveContinueWatching(item, 0, 1);
       }
     };
 
     const onPause = () => {
-      if (!item || item.type === "live") return;
+      if (!item) return;
+      tryMarkRecentlyWatched(false);
+
+      if (item.type === "live") return;
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
       if (!duration) return;
+
+      lastContinueWatchingSavedAt = Date.now();
       void saveContinueWatching(item, video.currentTime, duration);
     };
 
     video.addEventListener("loadedmetadata", onLoadedMetadata);
     video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("playing", onPlaying);
     video.addEventListener("error", onVideoError);
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("ended", onEnded);
@@ -196,6 +281,7 @@ export default function PlayerPage() {
     return () => {
       video.removeEventListener("loadedmetadata", onLoadedMetadata);
       video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("playing", onPlaying);
       video.removeEventListener("error", onVideoError);
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("ended", onEnded);

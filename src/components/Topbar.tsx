@@ -9,14 +9,30 @@ interface TopbarProps {
 }
 
 export default function Topbar({ uid, value, onSearch, action }: TopbarProps) {
+  const hasSearchValue = Boolean(value?.trim());
+
   return (
     <header className="topbar">
-      <input
-        className="search"
-        placeholder="Search live, movies, series..."
-        value={value}
-        onChange={(event) => onSearch(event.target.value)}
-      />
+      <div className="topbar-search-wrap">
+        <input
+          className="search"
+          placeholder="Search live, movies, series..."
+          value={value}
+          onChange={(event) => onSearch(event.target.value)}
+        />
+
+        {hasSearchValue ? (
+          <button
+            type="button"
+            className="search-clear-btn"
+            onClick={() => onSearch("")}
+            aria-label="Clear search"
+            title="Clear search"
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
 
       <div className="topbar-user">
         {action ? (

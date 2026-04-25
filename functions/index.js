@@ -7,6 +7,8 @@ admin.initializeApp();
 
 const db = admin.database();
 const STREAM_PROXY_ENDPOINT = "/api/stream";
+const STREAM_PROXY_TIMEOUT_MS = 45000;
+const XTREAM_TIMEOUT_MS = 25000;
 
 function cors(res) {
   res.set("Access-Control-Allow-Origin", "*");
@@ -172,6 +174,8 @@ function copyProxyHeaders(upstream, res) {
     "accept-ranges",
     "content-range",
     "cache-control",
+    "content-disposition",
+    "content-encoding",
     "etag",
     "last-modified",
   ].forEach((name) => {
@@ -180,6 +184,11 @@ function copyProxyHeaders(upstream, res) {
       res.set(name, value);
     }
   });
+}
+
+function readSingleHeader(value) {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 async function forwardStreamResponse(req, res, upstream, targetUrl) {
@@ -215,12 +224,12 @@ async function handleStreamProxy(req, res) {
   const rawTarget = Array.isArray(req.query.url) ? req.query.url[0] : req.query.url;
   const targetUrl = parseStreamTarget(rawTarget);
 
-  const rawRange = Array.isArray(req.headers.range)
-    ? req.headers.range[0]
-    : req.headers.range;
-  const rawUserAgent = Array.isArray(req.headers["user-agent"])
-    ? req.headers["user-agent"][0]
-    : req.headers["user-agent"];
+  const rawRange = readSingleHeader(req.headers.range);
+  const rawUserAgent = readSingleHeader(req.headers["user-agent"]);
+  const rawAccept = readSingleHeader(req.headers.accept);
+  const rawAcceptLanguage = readSingleHeader(req.headers["accept-language"]);
+  const rawReferer = readSingleHeader(req.headers.referer);
+  const rawOrigin = readSingleHeader(req.headers.origin);
 
   const headers = {};
   if (rawRange) {
@@ -231,12 +240,49 @@ async function handleStreamProxy(req, res) {
   if (rawUserAgent) {
     headers["User-Agent"] = rawUserAgent;
   }
+  if (rawAccept) {
+    headers.Accept = rawAccept;
+  }
+  if (rawAcceptLanguage) {
+    headers["Accept-Language"] = rawAcceptLanguage;
+  }
+  if (rawReferer) {
+    headers.Referer = rawReferer;
+  }
+  if (rawOrigin) {
+    headers.Origin = rawOrigin;
+  }
 
-  const upstream = await fetch(targetUrl.toString(), {
-    method: "GET",
-    headers,
-    redirect: "follow",
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, STREAM_PROXY_TIMEOUT_MS);
+
+  let upstream;
+  try {
+    upstream = await fetch(targetUrl.toString(), {
+      method: "GET",
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const isAbort =
+      error &&
+      typeof error === "object" &&
+      "name" in error &&
+      error.name === "AbortError";
+    if (isAbort) {
+      throw new Error(
+        `Upstream stream timeout after ${STREAM_PROXY_TIMEOUT_MS}ms for ${targetUrl.origin}`,
+      );
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Upstream stream request failed for ${targetUrl.origin}: ${message}`);
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!upstream.ok) {
     const body = await upstream.text().catch(() => "");
@@ -270,13 +316,65 @@ async function xtreamRequest({ server, username, password }, params) {
     }
   });
 
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    const txt = await response.text();
-    throw new Error(`Xtream HTTP ${response.status}: ${txt.slice(0, 160)}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, XTREAM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url.toString(), {
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const txt = await response.text();
+      throw new Error(`Xtream HTTP ${response.status}: ${txt.slice(0, 160)}`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function getStatusForError(message) {
+  const value = String(message || "").toLowerCase();
+
+  if (
+    value.includes("missing auth token") ||
+    value.includes("verify") ||
+    value.includes("id token") ||
+    value.includes("unauthorized")
+  ) {
+    return 401;
   }
 
-  return response.json();
+  if (
+    value.includes("invalid type") ||
+    value.includes("missing stream_id") ||
+    value.includes("stream url") ||
+    value.includes("missing series id") ||
+    value.includes("playlist")
+  ) {
+    return 400;
+  }
+
+  if (value.includes("upstream stream error")) {
+    return 502;
+  }
+
+  if (value.includes("upstream stream timeout")) {
+    return 504;
+  }
+
+  if (value.includes("upstream stream request failed")) {
+    return 502;
+  }
+
+  if (value.includes("xtream http")) {
+    return 502;
+  }
+
+  return 500;
 }
 
 function attachStreamUrls(credentials, type, streams) {
@@ -359,11 +457,7 @@ async function handleApi(req, res) {
       await handleStreamProxy(req, res);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = /upstream stream error/i.test(message)
-        ? 502
-        : /stream url/i.test(message)
-          ? 400
-          : 500;
+      const status = getStatusForError(message);
       logger.error("Stream proxy error", error);
       res.status(status).json({ error: message || "Stream proxy failed" });
     }
@@ -451,8 +545,10 @@ async function handleApi(req, res) {
 
     res.status(404).json({ error: "Route not found" });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = getStatusForError(message);
     logger.error("API error", error);
-    res.status(401).json({ error: error.message || "Unauthorized" });
+    res.status(status).json({ error: message || "Internal server error" });
   }
 }
 

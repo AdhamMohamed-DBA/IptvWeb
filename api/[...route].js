@@ -7,6 +7,7 @@ const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 const HAS_EXPLICIT_SERVICE_ACCOUNT = Boolean(FIREBASE_SERVICE_ACCOUNT_JSON?.trim());
 
 const XTREAM_TIMEOUT_MS = 25000;
+const STREAM_PROXY_TIMEOUT_MS = 45000;
 const STREAM_PROXY_ENDPOINT = "/api/stream";
 let initError = null;
 
@@ -243,6 +244,8 @@ function copyProxyHeaders(upstream, res) {
     "accept-ranges",
     "content-range",
     "cache-control",
+    "content-disposition",
+    "content-encoding",
     "etag",
     "last-modified",
   ].forEach((name) => {
@@ -251,6 +254,11 @@ function copyProxyHeaders(upstream, res) {
       res.setHeader(name, value);
     }
   });
+}
+
+function readSingleHeader(value) {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 async function forwardStreamResponse(req, res, upstream, targetUrl) {
@@ -284,12 +292,12 @@ async function forwardStreamResponse(req, res, upstream, targetUrl) {
 
 async function handleStreamProxy(req, res, url) {
   const targetUrl = parseStreamTarget(url.searchParams.get("url"));
-  const rangeHeader = Array.isArray(req.headers.range)
-    ? req.headers.range[0]
-    : req.headers.range;
-  const userAgentHeader = Array.isArray(req.headers["user-agent"])
-    ? req.headers["user-agent"][0]
-    : req.headers["user-agent"];
+  const rangeHeader = readSingleHeader(req.headers.range);
+  const userAgentHeader = readSingleHeader(req.headers["user-agent"]);
+  const acceptHeader = readSingleHeader(req.headers.accept);
+  const acceptLanguageHeader = readSingleHeader(req.headers["accept-language"]);
+  const refererHeader = readSingleHeader(req.headers.referer);
+  const originHeader = readSingleHeader(req.headers.origin);
 
   const headers = {};
   if (rangeHeader) {
@@ -300,12 +308,49 @@ async function handleStreamProxy(req, res, url) {
   if (userAgentHeader) {
     headers["User-Agent"] = userAgentHeader;
   }
+  if (acceptHeader) {
+    headers.Accept = acceptHeader;
+  }
+  if (acceptLanguageHeader) {
+    headers["Accept-Language"] = acceptLanguageHeader;
+  }
+  if (refererHeader) {
+    headers.Referer = refererHeader;
+  }
+  if (originHeader) {
+    headers.Origin = originHeader;
+  }
 
-  const upstream = await fetch(targetUrl.toString(), {
-    method: "GET",
-    headers,
-    redirect: "follow",
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, STREAM_PROXY_TIMEOUT_MS);
+
+  let upstream;
+  try {
+    upstream = await fetch(targetUrl.toString(), {
+      method: "GET",
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const isAbort =
+      error &&
+      typeof error === "object" &&
+      "name" in error &&
+      error.name === "AbortError";
+    if (isAbort) {
+      throw new Error(
+        `Upstream stream timeout after ${STREAM_PROXY_TIMEOUT_MS}ms for ${targetUrl.origin}`,
+      );
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Upstream stream request failed for ${targetUrl.origin}: ${message}`);
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!upstream.ok) {
     const body = await upstream.text().catch(() => "");
@@ -458,6 +503,14 @@ function getStatusForError(message) {
   }
 
   if (value.includes("upstream stream error")) {
+    return 502;
+  }
+
+  if (value.includes("upstream stream timeout")) {
+    return 504;
+  }
+
+  if (value.includes("upstream stream request failed")) {
     return 502;
   }
 

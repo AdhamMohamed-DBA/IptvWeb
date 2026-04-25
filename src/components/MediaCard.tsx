@@ -1,10 +1,11 @@
+import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { ContentItem } from "../types";
 
 interface MediaCardProps {
   item: ContentItem;
   isFavorite?: boolean;
-  onToggleFavorite?: (item: ContentItem) => void;
+  onToggleFavorite?: (item: ContentItem) => void | Promise<void>;
   subtitle?: string;
   onOpen?: () => void;
   to?: string;
@@ -32,6 +33,16 @@ export default function MediaCard({
   progress,
 }: MediaCardProps) {
   const destination = to || `/player/${item.id}`;
+
+  const handleFavoriteClick = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!onToggleFavorite) return;
+
+    void Promise.resolve(onToggleFavorite(item)).catch((error) => {
+      console.error("Failed to toggle favorite", error);
+    });
+  };
 
   return (
     <div className="media-card">
@@ -84,7 +95,9 @@ export default function MediaCard({
         <button
           type="button"
           className={`fav-btn ${isFavorite ? "fav-btn--active" : ""}`}
-          onClick={() => onToggleFavorite(item)}
+          onClick={handleFavoriteClick}
+          title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
         >
           {isFavorite ? "★" : "☆"}
         </button>
