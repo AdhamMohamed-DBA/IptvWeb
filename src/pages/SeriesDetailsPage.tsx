@@ -16,7 +16,7 @@ function routeForEpisode(item: ContentItem) {
 
 export default function SeriesDetailsPage({ searchQuery }: SeriesDetailsPageProps) {
   const { seriesId } = useParams();
-  const { library, toggleFavoriteItem } = useAppContext();
+  const { isFavorite, toggleFavoriteItem } = useAppContext();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -99,7 +99,7 @@ export default function SeriesDetailsPage({ searchQuery }: SeriesDetailsPageProp
                   item={item}
                   to={routeForEpisode(item)}
                   subtitle={`Episode ${item.episodeNum || "-"}`}
-                  isFavorite={Boolean(library.favorites[item.id])}
+                  isFavorite={isFavorite(item.id)}
                   onToggleFavorite={toggleFavoriteItem}
                 />
               ))}

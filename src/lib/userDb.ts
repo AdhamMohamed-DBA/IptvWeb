@@ -263,6 +263,26 @@ export async function getPlaylistCredentials(
   };
 }
 
+export async function saveCatalogRefreshSettings(
+  uid: string,
+  autoRefreshDays: number,
+) {
+  const days = Number.isFinite(autoRefreshDays)
+    ? Math.max(0, Math.floor(autoRefreshDays))
+    : 0;
+
+  await update(settingsPath(uid), {
+    catalogAutoRefreshDays: days,
+  });
+}
+
+export async function markCatalogRefreshRun(uid: string, timestamp = Date.now()) {
+  await update(settingsPath(uid), {
+    catalogLastRefreshAt: timestamp,
+  });
+}
+
+
 
 
 

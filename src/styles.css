@@ -150,6 +150,132 @@ a {
   overflow: auto;
 }
 
+.catalog-sync-panel {
+  margin: 1rem 1.2rem 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem;
+  background: rgba(12, 20, 34, 0.85);
+}
+
+.catalog-sync-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.catalog-sync-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.catalog-sync-head p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.catalog-sync-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.catalog-sync-controls label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.catalog-sync-controls select {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f1a2d;
+  color: var(--text);
+  padding: 0.4rem 0.55rem;
+  min-width: 138px;
+}
+
+.catalog-sync-btn {
+  border: 1px solid rgba(79, 140, 255, 0.5);
+  border-radius: 10px;
+  background: rgba(79, 140, 255, 0.16);
+  color: #dbe8ff;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+.catalog-sync-btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.catalog-sync-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.catalog-sync-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #101a2d;
+  padding: 0.65rem;
+}
+
+.catalog-sync-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.catalog-sync-card-head h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.catalog-sync-card-head span {
+  color: #b8cded;
+  font-size: 0.82rem;
+}
+
+.catalog-sync-bar {
+  margin-top: 0.45rem;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #1e2a42;
+  overflow: hidden;
+}
+
+.catalog-sync-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f8cff, #6ad7ff);
+}
+
+.catalog-sync-stage {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.catalog-sync-meta {
+  margin: 0.25rem 0 0;
+  color: #c9daf4;
+  font-size: 0.76rem;
+}
+
+.catalog-sync-error {
+  margin: 0.35rem 0 0;
+  color: #ffb3b2;
+  font-size: 0.77rem;
+}
+
 .page {
   padding: 1.2rem;
 }
@@ -555,5 +681,13 @@ a {
   .menu {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+
+  .catalog-sync-panel {
+    margin: 0.8rem;
+  }
+
+  .catalog-sync-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -151,6 +151,35 @@ function actionFromType(type, target) {
   return null;
 }
 
+function encodePathSegment(value) {
+  return encodeURIComponent(String(value ?? ""));
+}
+
+function normalizeContainerExtension(value, fallback = "mp4") {
+  const raw = String(value || fallback)
+    .trim()
+    .replace(/^\.+/, "")
+    .toLowerCase();
+
+  if (!raw) return fallback;
+  const cleaned = raw.replace(/[^a-z0-9]/g, "");
+  return cleaned || fallback;
+}
+
+function getSeriesIdFromRequest(path, url) {
+  const fromQuery = url.searchParams.get("series_id") || url.searchParams.get("id");
+  if (fromQuery) {
+    return fromQuery;
+  }
+
+  if (!path.includes("/series/")) {
+    return "";
+  }
+
+  const rawSeriesId = path.split("/series/")[1] || "";
+  return rawSeriesId.split("/")[0];
+}
+
 async function xtreamRequest({ server, username, password }, params) {
   const url = new URL(`${server}/player_api.php`);
   url.searchParams.set("username", username);
@@ -185,20 +214,24 @@ async function xtreamRequest({ server, username, password }, params) {
 
 function attachStreamUrls(credentials, type, streams) {
   const { server, username, password } = credentials;
+  const encodedUsername = encodePathSegment(username);
+  const encodedPassword = encodePathSegment(password);
 
   return (streams || []).map((stream) => {
+    const encodedStreamId = encodePathSegment(stream.stream_id);
+
     if (type === "live") {
       return {
         ...stream,
-        stream_url: `${server}/live/${username}/${password}/${stream.stream_id}.m3u8`,
+        stream_url: `${server}/live/${encodedUsername}/${encodedPassword}/${encodedStreamId}.m3u8`,
       };
     }
 
     if (type === "movie") {
-      const ext = stream.container_extension || "mp4";
+      const ext = normalizeContainerExtension(stream.container_extension, "mp4");
       return {
         ...stream,
-        stream_url: `${server}/movie/${username}/${password}/${stream.stream_id}.${ext}`,
+        stream_url: `${server}/movie/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${ext}`,
       };
     }
 
@@ -210,20 +243,28 @@ function attachStreamUrls(credentials, type, streams) {
 
 function attachEpisodeUrls(credentials, seriesResponse) {
   const { server, username, password } = credentials;
-  const episodesBySeason = seriesResponse.episodes || {};
+  const encodedUsername = encodePathSegment(username);
+  const encodedPassword = encodePathSegment(password);
+  const safeSeriesResponse =
+    seriesResponse && typeof seriesResponse === "object" ? seriesResponse : {};
+  const episodesBySeason =
+    safeSeriesResponse.episodes && typeof safeSeriesResponse.episodes === "object"
+      ? safeSeriesResponse.episodes
+      : {};
 
   Object.keys(episodesBySeason).forEach((seasonKey) => {
     episodesBySeason[seasonKey] = (episodesBySeason[seasonKey] || []).map((episode) => {
-      const ext = episode.container_extension || "mp4";
+      const ext = normalizeContainerExtension(episode.container_extension, "mp4");
+      const encodedEpisodeId = encodePathSegment(episode.id);
       return {
         ...episode,
-        stream_url: `${server}/series/${username}/${password}/${episode.id}.${ext}`,
+        stream_url: `${server}/series/${encodedUsername}/${encodedPassword}/${encodedEpisodeId}.${ext}`,
       };
     });
   });
 
   return {
-    ...seriesResponse,
+    ...safeSeriesResponse,
     episodes: episodesBySeason,
   };
 }
@@ -286,6 +327,7 @@ async function handleApi(req, res) {
     const url = getRequestUrl(req);
     const type = String(url.searchParams.get("type") || "");
     const categoryId = url.searchParams.get("category_id");
+    const seriesId = getSeriesIdFromRequest(path, url);
 
     const uid = await getUidFromReq(req);
     const credentials = await getPlaylistCredentials(uid);
@@ -323,9 +365,7 @@ async function handleApi(req, res) {
       return;
     }
 
-    if (path.includes("/series/")) {
-      const rawSeriesId = path.split("/series/")[1] || "";
-      const seriesId = rawSeriesId.split("/")[0];
+    if (seriesId || path.endsWith("/series")) {
       if (!seriesId) {
         res.status(400).json({ error: "Missing series id" });
         return;

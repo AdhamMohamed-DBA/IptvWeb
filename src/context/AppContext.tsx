@@ -47,6 +47,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState<string>();
   const [library, setLibrary] = useState<UserLibrary>(emptyLibrary);
+  const [favoriteOverrides, setFavoriteOverrides] = useState<Record<string, boolean>>({});
   const [authVersion, setAuthVersion] = useState(0);
 
   useEffect(() => {
@@ -84,23 +85,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [authVersion]);
 
+  useEffect(() => {
+    setFavoriteOverrides((current) => {
+      const keys = Object.keys(current);
+      if (keys.length === 0) {
+        return current;
+      }
+
+      let changed = false;
+      const next: Record<string, boolean> = { ...current };
+
+      keys.forEach((itemId) => {
+        const fromDb = Boolean(library.favorites[itemId]);
+        if (fromDb === current[itemId]) {
+          delete next[itemId];
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [library.favorites]);
+
   const retryAuth = useCallback(async () => {
     setAuthVersion((value) => value + 1);
   }, []);
 
   const isFavorite = useCallback(
     (itemId: string) => {
+      if (Object.prototype.hasOwnProperty.call(favoriteOverrides, itemId)) {
+        return Boolean(favoriteOverrides[itemId]);
+      }
+
       return Boolean(library.favorites[itemId]);
     },
-    [library.favorites],
+    [library.favorites, favoriteOverrides],
   );
 
   const toggleFavoriteItem = useCallback(
     async (item: ContentItem) => {
       if (!uid) return;
-      await toggleFavorite(uid, item, Boolean(library.favorites[item.id]));
+
+      const currentFavorite = Object.prototype.hasOwnProperty.call(favoriteOverrides, item.id)
+        ? Boolean(favoriteOverrides[item.id])
+        : Boolean(library.favorites[item.id]);
+      const nextFavorite = !currentFavorite;
+
+      setFavoriteOverrides((current) => ({
+        ...current,
+        [item.id]: nextFavorite,
+      }));
+
+      try {
+        await toggleFavorite(uid, item, currentFavorite);
+      } catch (error) {
+        setFavoriteOverrides((current) => ({
+          ...current,
+          [item.id]: currentFavorite,
+        }));
+        throw error;
+      }
     },
-    [uid, library.favorites],
+    [uid, library.favorites, favoriteOverrides],
   );
 
   const markRecentlyWatched = useCallback(

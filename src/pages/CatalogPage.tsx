@@ -35,9 +35,9 @@ function routeFor(item: ContentItem) {
 }
 
 export default function CatalogPage({ type, searchQuery }: CatalogPageProps) {
-  const { library, toggleFavoriteItem } = useAppContext();
+  const { isFavorite, toggleFavoriteItem } = useAppContext();
   const { categories, selectedCategoryId, setSelectedCategoryId, items, loading, error } =
-    useCatalog(type);
+    useCatalog(type, { initialSelection: "firstCategory" });
 
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -79,7 +79,7 @@ export default function CatalogPage({ type, searchQuery }: CatalogPageProps) {
                     ? "Live Channel"
                     : item.type.toUpperCase()
               }
-              isFavorite={Boolean(library.favorites[item.id])}
+              isFavorite={isFavorite(item.id)}
               onToggleFavorite={toggleFavoriteItem}
             />
           ))}

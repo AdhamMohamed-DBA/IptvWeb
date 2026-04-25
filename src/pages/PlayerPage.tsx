@@ -16,6 +16,34 @@ function pickCurrentProgram(epg: EpgProgram[], now: number) {
   return epg.find((entry) => now >= entry.start && now <= entry.end);
 }
 
+function isLikelyHlsUrl(url: string) {
+  return /\.m3u8(\?|$)/i.test(url);
+}
+
+function mediaErrorMessage(video: HTMLVideoElement) {
+  const mediaError = video.error;
+  if (!mediaError) {
+    return "Video playback failed.";
+  }
+
+  const reasonByCode: Record<number, string> = {
+    [MediaError.MEDIA_ERR_ABORTED]: "Playback aborted",
+    [MediaError.MEDIA_ERR_NETWORK]: "Network error while loading stream",
+    [MediaError.MEDIA_ERR_DECODE]: "Video decode error",
+    [MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED]: "Stream format not supported",
+  };
+
+  return reasonByCode[mediaError.code] || "Video playback failed";
+}
+
+function maybeMixedContentMessage(streamUrl: string) {
+  if (typeof window === "undefined") return "";
+  if (window.location.protocol !== "https:") return "";
+  if (!/^http:\/\//i.test(streamUrl)) return "";
+
+  return " The stream is HTTP while app is HTTPS (mixed-content blocked by browser).";
+}
+
 export default function PlayerPage() {
   const { itemId } = useParams();
   const location = useLocation();
@@ -41,30 +69,82 @@ export default function PlayerPage() {
     const video = videoRef.current;
     if (!video || !item?.streamUrl) return;
 
+    const streamUrl = item.streamUrl.trim();
+    if (!streamUrl) {
+      setError("Missing stream URL for this item.");
+      return;
+    }
+
     setError(undefined);
     let hls: Hls | null = null;
+    const shouldUseHlsJs = isLikelyHlsUrl(streamUrl) && Hls.isSupported();
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = item.streamUrl;
-    } else if (Hls.isSupported()) {
+    const tryPlay = () => {
+      const playResult = video.play();
+      if (playResult && typeof playResult.catch === "function") {
+        playResult.catch(() => {
+          // Autoplay can fail due to browser policy. Keep controls available.
+        });
+      }
+    };
+
+    const setNativeSource = () => {
+      video.src = streamUrl;
+      video.load();
+      tryPlay();
+    };
+
+    if (video.canPlayType("application/vnd.apple.mpegurl") && isLikelyHlsUrl(streamUrl)) {
+      setNativeSource();
+    } else if (shouldUseHlsJs) {
       hls = new Hls({
         maxBufferLength: 30,
       });
-      hls.loadSource(item.streamUrl);
+      hls.loadSource(streamUrl);
       hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        tryPlay();
+      });
+
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
-          setError(`Playback error: ${data.details}`);
+          setError(
+            `Playback error: ${data.details}.${maybeMixedContentMessage(streamUrl)}`,
+          );
+
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            try {
+              hls?.recoverMediaError();
+              return;
+            } catch {
+              // Fall through to full fallback.
+            }
+          }
+
+          hls.destroy();
+          hls = null;
+          setNativeSource();
         }
       });
     } else {
-      video.src = item.streamUrl;
+      setNativeSource();
     }
 
     const onLoadedMetadata = () => {
       if (initialResumePosition > 0 && !Number.isNaN(initialResumePosition)) {
         video.currentTime = initialResumePosition;
       }
+
+      tryPlay();
+    };
+
+    const onCanPlay = () => {
+      setError(undefined);
+    };
+
+    const onVideoError = () => {
+      setError(`${mediaErrorMessage(video)}.${maybeMixedContentMessage(streamUrl)}`);
     };
 
     const onTimeUpdate = () => {
@@ -90,16 +170,23 @@ export default function PlayerPage() {
     };
 
     video.addEventListener("loadedmetadata", onLoadedMetadata);
+    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("error", onVideoError);
     video.addEventListener("timeupdate", onTimeUpdate);
     video.addEventListener("ended", onEnded);
     video.addEventListener("pause", onPause);
 
     return () => {
       video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("error", onVideoError);
       video.removeEventListener("timeupdate", onTimeUpdate);
       video.removeEventListener("ended", onEnded);
       video.removeEventListener("pause", onPause);
       hls?.destroy();
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     };
   }, [item, initialResumePosition, markRecentlyWatched, saveContinueWatching]);
 

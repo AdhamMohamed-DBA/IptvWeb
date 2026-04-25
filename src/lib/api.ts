@@ -1,11 +1,132 @@
 import type { CatalogType, Category, ContentItem, EpgProgram, SeriesInfo } from "../types";
 import { auth } from "./firebase";
 import { ensureAnonymousAuth } from "./auth";
+import { saveItemsToCache } from "./cache";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 const REQUEST_TIMEOUT_MS = 25000;
 const REQUEST_RETRIES_PER_BASE = 3;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
+const STREAM_CACHE_TTL_MS = 90 * 1000;
+
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
+const categoriesCache = new Map<CatalogType, CacheEntry<Category[]>>();
+const streamsCache = new Map<string, CacheEntry<ContentItem[]>>();
+const inflightRequests = new Map<string, Promise<unknown>>();
+
+const CATALOG_SYNC_TYPES: CatalogType[] = ["live", "movie", "series"];
+
+export interface CatalogSyncProgressEvent {
+  type: CatalogType;
+  progress: number;
+  stage: "start" | "categories" | "streams" | "done";
+  categoriesCount?: number;
+  itemsCount?: number;
+}
+
+export interface CatalogSyncSummary {
+  type: CatalogType;
+  categoriesCount: number;
+  itemsCount: number;
+}
+
+interface CatalogSyncOptions {
+  signal?: AbortSignal;
+  onProgress?: (event: CatalogSyncProgressEvent) => void;
+}
+
+export function clearCatalogCache() {
+  categoriesCache.clear();
+  streamsCache.clear();
+  inflightRequests.clear();
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error("Catalog sync cancelled");
+  }
+}
+
+function emitSyncProgress(
+  callback: CatalogSyncOptions["onProgress"],
+  event: CatalogSyncProgressEvent,
+) {
+  callback?.(event);
+}
+
+export async function syncCatalogType(
+  type: CatalogType,
+  options: CatalogSyncOptions = {},
+): Promise<CatalogSyncSummary> {
+  const { signal, onProgress } = options;
+
+  throwIfAborted(signal);
+  emitSyncProgress(onProgress, {
+    type,
+    progress: 0,
+    stage: "start",
+  });
+
+  const categories = await getCategories(type);
+  throwIfAborted(signal);
+  emitSyncProgress(onProgress, {
+    type,
+    progress: 35,
+    stage: "categories",
+    categoriesCount: categories.length,
+  });
+
+  const items = await getStreams(type);
+  saveItemsToCache(items);
+
+  throwIfAborted(signal);
+  emitSyncProgress(onProgress, {
+    type,
+    progress: 95,
+    stage: "streams",
+    categoriesCount: categories.length,
+    itemsCount: items.length,
+  });
+
+  emitSyncProgress(onProgress, {
+    type,
+    progress: 100,
+    stage: "done",
+    categoriesCount: categories.length,
+    itemsCount: items.length,
+  });
+
+  return {
+    type,
+    categoriesCount: categories.length,
+    itemsCount: items.length,
+  };
+}
+
+export async function syncAllCatalogs(
+  options: CatalogSyncOptions & { types?: CatalogType[] } = {},
+): Promise<Record<CatalogType, CatalogSyncSummary>> {
+  const { types = CATALOG_SYNC_TYPES, signal, onProgress } = options;
+
+  const entries = await Promise.all(
+    types.map(async (type) => {
+      const summary = await syncCatalogType(type, { signal, onProgress });
+      return [type, summary] as const;
+    }),
+  );
+
+  const result = {} as Record<CatalogType, CatalogSyncSummary>;
+  entries.forEach(([type, summary]) => {
+    result[type] = summary;
+  });
+
+  return result;
+}
 
 function normalizeBase(value: string): string {
   const trimmed = value.trim();
@@ -43,6 +164,28 @@ function sleep(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function getValidCached<T>(entry?: CacheEntry<T>): T | null {
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) return null;
+  return entry.data;
+}
+
+function withRequestDedup<T>(key: string, factory: () => Promise<T>): Promise<T> {
+  const existing = inflightRequests.get(key);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const promise = factory().finally(() => {
+    if (inflightRequests.get(key) === promise) {
+      inflightRequests.delete(key);
+    }
+  });
+
+  inflightRequests.set(key, promise as Promise<unknown>);
+  return promise;
 }
 
 async function fetchWithTimeout(url: string, headers: Record<string, string>) {
@@ -199,29 +342,79 @@ function mapEpisode(seriesId: string, episode: any): ContentItem {
   };
 }
 
+function isSeriesRoute404(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /API error 404/i.test(message) && /requesting\s+\/series(\?|\/)/i.test(message);
+}
+
 export async function getCategories(type: CatalogType): Promise<Category[]> {
-  const data = await request<any[]>(`/categories?type=${type}`);
-  return data.map((item) => ({
-    id: String(item.category_id),
-    name: item.category_name,
-    type,
-  }));
+  const cached = getValidCached(categoriesCache.get(type));
+  if (cached) {
+    return cached;
+  }
+
+  return withRequestDedup(`categories:${type}`, async () => {
+    const data = await request<any[]>(`/categories?type=${type}`);
+    const mapped = data.map((item) => ({
+      id: String(item.category_id),
+      name: item.category_name,
+      type,
+    }));
+
+    categoriesCache.set(type, {
+      data: mapped,
+      expiresAt: Date.now() + CATEGORY_CACHE_TTL_MS,
+    });
+
+    return mapped;
+  });
 }
 
 export async function getStreams(type: CatalogType, categoryId?: string): Promise<ContentItem[]> {
+  const cacheKey = `${type}:${categoryId || "all"}`;
+  const cached = getValidCached(streamsCache.get(cacheKey));
+  if (cached) {
+    return cached;
+  }
+
   const query = new URLSearchParams({ type });
   if (categoryId) query.set("category_id", categoryId);
 
-  const data = await request<any[]>(`/streams?${query.toString()}`);
+  return withRequestDedup(`streams:${cacheKey}`, async () => {
+    const data = await request<any[]>(`/streams?${query.toString()}`);
 
-  if (type === "live") return data.map(mapLive);
-  if (type === "movie") return data.map(mapMovie);
-  return data.map(mapSeries);
+    let mapped: ContentItem[];
+    if (type === "live") {
+      mapped = data.map(mapLive);
+    } else if (type === "movie") {
+      mapped = data.map(mapMovie);
+    } else {
+      mapped = data.map(mapSeries);
+    }
+
+    streamsCache.set(cacheKey, {
+      data: mapped,
+      expiresAt: Date.now() + STREAM_CACHE_TTL_MS,
+    });
+
+    return mapped;
+  });
 }
 
 export async function getSeriesInfo(seriesId: string): Promise<SeriesInfo> {
   const cleanSeriesId = seriesId.replace("series_", "");
-  const data = await request<any>(`/series/${cleanSeriesId}`);
+  const encodedSeriesId = encodeURIComponent(cleanSeriesId);
+
+  let data: any;
+  try {
+    data = await request<any>(`/series/${encodedSeriesId}`);
+  } catch (error) {
+    if (!isSeriesRoute404(error)) {
+      throw error;
+    }
+
+    data = await request<any>(`/series?series_id=${encodedSeriesId}`);
+  }
 
   const series: ContentItem = {
     id: `series_${cleanSeriesId}`,

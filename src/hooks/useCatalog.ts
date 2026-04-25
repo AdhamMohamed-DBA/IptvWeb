@@ -12,16 +12,28 @@ interface UseCatalogResult {
   error?: string;
 }
 
-export function useCatalog(type: CatalogType): UseCatalogResult {
+interface UseCatalogOptions {
+  initialSelection?: "all" | "firstCategory";
+}
+
+export function useCatalog(type: CatalogType, options?: UseCatalogOptions): UseCatalogResult {
+  const initialSelection = options?.initialSelection === "firstCategory" ? "firstCategory" : "all";
+
   const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>("all");
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
+    initialSelection === "firstCategory" ? "" : "all",
+  );
   const [items, setItems] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    setSelectedCategoryId("all");
-  }, [type]);
+    setSelectedCategoryId(initialSelection === "firstCategory" ? "" : "all");
+    setCategories([]);
+    setItems([]);
+    setError(undefined);
+    setLoading(true);
+  }, [type, initialSelection]);
 
   useEffect(() => {
     let ignore = false;
@@ -30,10 +42,25 @@ export function useCatalog(type: CatalogType): UseCatalogResult {
       try {
         const categoryList = await getCategories(type);
         if (ignore) return;
-        setCategories([{ id: "all", name: "All", type }, ...categoryList]);
+
+        const nextCategories = [{ id: "all", name: "All", type }, ...categoryList];
+        setCategories(nextCategories);
+        setSelectedCategoryId((current) => {
+          if (current && nextCategories.some((category) => category.id === current)) {
+            return current;
+          }
+
+          if (initialSelection === "all") {
+            return "all";
+          }
+
+          const firstRealCategory = categoryList[0]?.id;
+          return firstRealCategory || "all";
+        });
       } catch (err: any) {
         if (ignore) return;
         setError(err?.message || "Failed to load categories");
+        setLoading(false);
       }
     }
 
@@ -41,9 +68,13 @@ export function useCatalog(type: CatalogType): UseCatalogResult {
     return () => {
       ignore = true;
     };
-  }, [type]);
+  }, [type, initialSelection]);
 
   useEffect(() => {
+    if (!selectedCategoryId) {
+      return;
+    }
+
     let ignore = false;
 
     async function loadStreams() {

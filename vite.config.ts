@@ -10,10 +10,9 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["IPTV.png", "pwa-192.png", "pwa-512.png"],
       manifest: {
-        name: "IPTV Web PWA",
-        short_name: "IPTV Web",
-        description:
-          "IPTV progressive web application powered by Firebase and PWA capabilities.",
+        name: "IPTV",
+        short_name: "IPTV",
+        description: "IPTV progressive web application powered by Firebase and PWA.",
         theme_color: "#0b1220",
         background_color: "#0b1220",
         display: "standalone",

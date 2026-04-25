@@ -11,7 +11,7 @@ const links = [
 export default function Sidebar() {
   return (
     <aside className="sidebar">
-      <div className="logo">IPTV Web</div>
+      <div className="logo">IPTV</div>
 
       <nav className="menu">
         {links.map((link) => (

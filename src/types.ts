@@ -17,6 +17,8 @@ export interface UserSettings {
   playlist?: PlaylistCredentials;
   playlists?: Record<string, StoredPlaylist | undefined>;
   activePlaylistId?: string;
+  catalogAutoRefreshDays?: number;
+  catalogLastRefreshAt?: number;
 }
 
 export interface Category {

@@ -26,10 +26,10 @@ function routeForItem(item: ContentItem): string {
 }
 
 export default function HomePage({ searchQuery }: HomePageProps) {
-  const { library, toggleFavoriteItem } = useAppContext();
-  const liveCatalog = useCatalog("live");
-  const movieCatalog = useCatalog("movie");
-  const seriesCatalog = useCatalog("series");
+  const { library, isFavorite, toggleFavoriteItem } = useAppContext();
+  const liveCatalog = useCatalog("live", { initialSelection: "firstCategory" });
+  const movieCatalog = useCatalog("movie", { initialSelection: "firstCategory" });
+  const seriesCatalog = useCatalog("series", { initialSelection: "firstCategory" });
 
   const favorites = useMemo(
     () =>
@@ -112,7 +112,7 @@ export default function HomePage({ searchQuery }: HomePageProps) {
                 )}`}
                 to={`/player/${item.id}`}
                 state={{ item, resumePosition: item.position }}
-                isFavorite={Boolean(library.favorites[item.id])}
+                isFavorite={isFavorite(item.id)}
                 onToggleFavorite={toggleFavoriteItem}
               />
             ))}
@@ -131,7 +131,7 @@ export default function HomePage({ searchQuery }: HomePageProps) {
                 item={item}
                 to={routeForItem(item)}
                 subtitle="Live channel"
-                isFavorite={Boolean(library.favorites[item.id])}
+                isFavorite={isFavorite(item.id)}
                 onToggleFavorite={toggleFavoriteItem}
               />
             ))}
@@ -150,7 +150,7 @@ export default function HomePage({ searchQuery }: HomePageProps) {
                 item={item}
                 to={routeForItem(item)}
                 subtitle={item.added ? `Added ${formatDate(item.added)}` : "Recently added"}
-                isFavorite={Boolean(library.favorites[item.id])}
+                isFavorite={isFavorite(item.id)}
                 onToggleFavorite={toggleFavoriteItem}
               />
             ))}
@@ -169,7 +169,7 @@ export default function HomePage({ searchQuery }: HomePageProps) {
                 item={item}
                 to={routeForItem(item)}
                 subtitle={item.updatedAt ? `Watched ${formatDate(item.updatedAt)}` : "Watched"}
-                isFavorite={Boolean(library.favorites[item.id])}
+                isFavorite={isFavorite(item.id)}
                 onToggleFavorite={toggleFavoriteItem}
               />
             ))}
@@ -188,7 +188,7 @@ export default function HomePage({ searchQuery }: HomePageProps) {
                 item={item}
                 to={routeForItem(item)}
                 subtitle={item.type.toUpperCase()}
-                isFavorite={Boolean(library.favorites[item.id])}
+                isFavorite={isFavorite(item.id)}
                 onToggleFavorite={toggleFavoriteItem}
               />
             ))}
