@@ -1,4 +1,5 @@
 import admin from "firebase-admin";
+import { Readable } from "node:stream";
 
 const FIREBASE_DATABASE_URL =
   process.env.FIREBASE_DATABASE_URL || process.env.VITE_FIREBASE_DATABASE_URL;
@@ -6,6 +7,7 @@ const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 const HAS_EXPLICIT_SERVICE_ACCOUNT = Boolean(FIREBASE_SERVICE_ACCOUNT_JSON?.trim());
 
 const XTREAM_TIMEOUT_MS = 25000;
+const STREAM_PROXY_ENDPOINT = "/api/stream";
 let initError = null;
 
 function parseServiceAccount(rawValue) {
@@ -46,8 +48,8 @@ initializeFirebaseAdmin();
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Range");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
 }
 
 function getRequestUrl(req) {
@@ -155,6 +157,164 @@ function encodePathSegment(value) {
   return encodeURIComponent(String(value ?? ""));
 }
 
+function proxyStreamUrl(targetUrl) {
+  return `${STREAM_PROXY_ENDPOINT}?url=${encodeURIComponent(targetUrl)}`;
+}
+
+function parseStreamTarget(rawValue) {
+  if (!rawValue) {
+    throw new Error("Missing stream url");
+  }
+
+  let decoded = String(rawValue);
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    decoded = String(rawValue);
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(decoded);
+  } catch {
+    throw new Error("Invalid stream url");
+  }
+
+  if (!/^https?:$/i.test(parsed.protocol)) {
+    throw new Error("Invalid stream url protocol");
+  }
+
+  return parsed;
+}
+
+function isPlaylistResponse(contentType, streamUrl) {
+  const lowerType = String(contentType || "").toLowerCase();
+  if (
+    lowerType.includes("application/vnd.apple.mpegurl") ||
+    lowerType.includes("application/x-mpegurl")
+  ) {
+    return true;
+  }
+
+  return /\.m3u8?(\?|$)/i.test(streamUrl);
+}
+
+function resolveManifestUrl(manifestUrl, value) {
+  if (!value) return "";
+
+  try {
+    return new URL(value, manifestUrl).toString();
+  } catch {
+    return "";
+  }
+}
+
+function rewriteManifestUriAttributes(line, manifestUrl) {
+  const withDoubleQuotes = line.replace(/URI="([^"]+)"/g, (match, uri) => {
+    const resolved = resolveManifestUrl(manifestUrl, uri);
+    if (!resolved) return match;
+    return `URI="${proxyStreamUrl(resolved)}"`;
+  });
+
+  return withDoubleQuotes.replace(/URI='([^']+)'/g, (match, uri) => {
+    const resolved = resolveManifestUrl(manifestUrl, uri);
+    if (!resolved) return match;
+    return `URI='${proxyStreamUrl(resolved)}'`;
+  });
+}
+
+function rewriteManifestLine(line, manifestUrl) {
+  const trimmed = line.trim();
+  if (!trimmed) return line;
+
+  if (trimmed.startsWith("#")) {
+    return rewriteManifestUriAttributes(line, manifestUrl);
+  }
+
+  const resolved = resolveManifestUrl(manifestUrl, trimmed);
+  if (!resolved) return line;
+  return proxyStreamUrl(resolved);
+}
+
+function rewriteHlsManifest(body, manifestUrl) {
+  return body
+    .split(/\r?\n/)
+    .map((line) => rewriteManifestLine(line, manifestUrl))
+    .join("\n");
+}
+
+function copyProxyHeaders(upstream, res) {
+  [
+    "content-type",
+    "content-length",
+    "accept-ranges",
+    "content-range",
+    "cache-control",
+    "etag",
+    "last-modified",
+  ].forEach((name) => {
+    const value = upstream.headers.get(name);
+    if (value) {
+      res.setHeader(name, value);
+    }
+  });
+}
+
+async function forwardStreamResponse(req, res, upstream, targetUrl) {
+  const contentType = upstream.headers.get("content-type") || "";
+  const isPlaylist = isPlaylistResponse(contentType, targetUrl.toString());
+
+  if (isPlaylist) {
+    const manifestText = await upstream.text();
+    const rewritten = rewriteHlsManifest(manifestText, targetUrl.toString());
+
+    res.status(upstream.status);
+    res.setHeader(
+      "content-type",
+      contentType || "application/vnd.apple.mpegurl; charset=utf-8",
+    );
+    res.setHeader("cache-control", "no-store, no-cache, must-revalidate, max-age=0");
+    res.send(rewritten);
+    return;
+  }
+
+  copyProxyHeaders(upstream, res);
+  res.status(upstream.status);
+
+  if (!upstream.body || req.method === "HEAD") {
+    res.end();
+    return;
+  }
+
+  Readable.fromWeb(upstream.body).pipe(res);
+}
+
+async function handleStreamProxy(req, res, url) {
+  const targetUrl = parseStreamTarget(url.searchParams.get("url"));
+  const rangeHeader = Array.isArray(req.headers.range)
+    ? req.headers.range[0]
+    : req.headers.range;
+  const userAgentHeader = Array.isArray(req.headers["user-agent"])
+    ? req.headers["user-agent"][0]
+    : req.headers["user-agent"];
+
+  const headers = {};
+  if (rangeHeader) {
+    headers.Range = rangeHeader;
+  }
+  if (userAgentHeader) {
+    headers["User-Agent"] = userAgentHeader;
+  }
+
+  const upstream = await fetch(targetUrl.toString(), {
+    method: req.method === "HEAD" ? "HEAD" : "GET",
+    headers,
+    redirect: "follow",
+  });
+
+  await forwardStreamResponse(req, res, upstream, targetUrl);
+}
+
 function normalizeContainerExtension(value, fallback = "mp4") {
   const raw = String(value || fallback)
     .trim()
@@ -221,17 +381,19 @@ function attachStreamUrls(credentials, type, streams) {
     const encodedStreamId = encodePathSegment(stream.stream_id);
 
     if (type === "live") {
+      const target = `${server}/live/${encodedUsername}/${encodedPassword}/${encodedStreamId}.m3u8`;
       return {
         ...stream,
-        stream_url: `${server}/live/${encodedUsername}/${encodedPassword}/${encodedStreamId}.m3u8`,
+        stream_url: proxyStreamUrl(target),
       };
     }
 
     if (type === "movie") {
       const ext = normalizeContainerExtension(stream.container_extension, "mp4");
+      const target = `${server}/movie/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${ext}`;
       return {
         ...stream,
-        stream_url: `${server}/movie/${encodedUsername}/${encodedPassword}/${encodedStreamId}.${ext}`,
+        stream_url: proxyStreamUrl(target),
       };
     }
 
@@ -256,9 +418,11 @@ function attachEpisodeUrls(credentials, seriesResponse) {
     episodesBySeason[seasonKey] = (episodesBySeason[seasonKey] || []).map((episode) => {
       const ext = normalizeContainerExtension(episode.container_extension, "mp4");
       const encodedEpisodeId = encodePathSegment(episode.id);
+      const target =
+        `${server}/series/${encodedUsername}/${encodedPassword}/${encodedEpisodeId}.${ext}`;
       return {
         ...episode,
-        stream_url: `${server}/series/${encodedUsername}/${encodedPassword}/${encodedEpisodeId}.${ext}`,
+        stream_url: proxyStreamUrl(target),
       };
     });
   });
@@ -284,6 +448,7 @@ function getStatusForError(message) {
   if (
     value.includes("invalid type") ||
     value.includes("missing stream_id") ||
+    value.includes("stream url") ||
     value.includes("missing series id") ||
     value.includes("playlist")
   ) {
@@ -300,8 +465,28 @@ function getStatusForError(message) {
 async function handleApi(req, res) {
   cors(res);
 
+  const path = getRequestPath(req);
+  const url = getRequestUrl(req);
+
   if (req.method === "OPTIONS") {
     res.status(204).send("");
+    return;
+  }
+
+  if (path.endsWith("/stream")) {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      await handleStreamProxy(req, res, url);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = getStatusForError(message);
+      console.error("Stream proxy error", error);
+      res.status(status).json({ error: message || "Stream proxy failed" });
+    }
     return;
   }
 
@@ -310,7 +495,6 @@ async function handleApi(req, res) {
     return;
   }
 
-  const path = getRequestPath(req);
   if (path === "/healthz") {
     const ready = !initError && admin.apps.length > 0;
     res.status(ready ? 200 : 500).json({
@@ -323,8 +507,6 @@ async function handleApi(req, res) {
 
   try {
     ensureBackendReady();
-
-    const url = getRequestUrl(req);
     const type = String(url.searchParams.get("type") || "");
     const categoryId = url.searchParams.get("category_id");
     const seriesId = getSeriesIdFromRequest(path, url);

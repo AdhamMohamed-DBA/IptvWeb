@@ -317,6 +317,10 @@ a {
   gap: 0.8rem;
 }
 
+.media-grid--compact {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+}
+
 .media-card {
   position: relative;
   border: 1px solid var(--line);

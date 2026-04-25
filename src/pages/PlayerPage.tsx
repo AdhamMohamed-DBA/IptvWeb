@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import Hls from "hls.js";
+import MediaCard from "../components/MediaCard";
+import Section from "../components/Section";
 import { useAppContext } from "../context/AppContext";
-import { getEpg } from "../lib/api";
+import { getEpg, getSeriesInfo, getStreams } from "../lib/api";
 import { getCachedItem } from "../lib/cache";
 import { formatDuration, formatEpgTime } from "../lib/format";
+import { ensurePlayableStreamUrl } from "../lib/stream";
 import type { ContentItem, EpgProgram } from "../types";
 
 interface PlayerLocationState {
@@ -44,6 +47,11 @@ function maybeMixedContentMessage(streamUrl: string) {
   return " The stream is HTTP while app is HTTPS (mixed-content blocked by browser).";
 }
 
+function routeForPlayerItem(item: ContentItem) {
+  if (item.type === "series") return `/series/${item.id}`;
+  return `/player/${item.id}`;
+}
+
 export default function PlayerPage() {
   const { itemId } = useParams();
   const location = useLocation();
@@ -64,12 +72,15 @@ export default function PlayerPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [error, setError] = useState<string>();
   const [epg, setEpg] = useState<EpgProgram[]>([]);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState<string>();
+  const [relatedItems, setRelatedItems] = useState<ContentItem[]>([]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !item?.streamUrl) return;
 
-    const streamUrl = item.streamUrl.trim();
+    const streamUrl = ensurePlayableStreamUrl(item.streamUrl);
     if (!streamUrl) {
       setError("Missing stream URL for this item.");
       return;
@@ -110,7 +121,9 @@ export default function PlayerPage() {
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
           setError(
-            `Playback error: ${data.details}.${maybeMixedContentMessage(streamUrl)}`,
+            `Playback error: ${data.details}. If this stream is HTTP-only, it will be blocked on secure pages unless routed through proxy.${maybeMixedContentMessage(
+              streamUrl,
+            )}`,
           );
 
           if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
@@ -144,7 +157,11 @@ export default function PlayerPage() {
     };
 
     const onVideoError = () => {
-      setError(`${mediaErrorMessage(video)}.${maybeMixedContentMessage(streamUrl)}`);
+      setError(
+        `${mediaErrorMessage(video)}. If this stream is HTTP-only, it may require proxy playback.${maybeMixedContentMessage(
+          streamUrl,
+        )}`,
+      );
     };
 
     const onTimeUpdate = () => {
@@ -211,6 +228,64 @@ export default function PlayerPage() {
     }
 
     loadEpg();
+    return () => {
+      ignore = true;
+    };
+  }, [item]);
+
+  useEffect(() => {
+    if (!item) {
+      setRelatedItems([]);
+      setRelatedError(undefined);
+      setRelatedLoading(false);
+      return;
+    }
+
+    let ignore = false;
+
+    async function loadRelated() {
+      setRelatedLoading(true);
+      setRelatedError(undefined);
+
+      try {
+        if (item.type === "live") {
+          const categoryId = item.categoryId || undefined;
+          const channels = await getStreams("live", categoryId);
+          if (ignore) return;
+
+          const picked = channels
+            .filter((channel) => channel.id !== item.id)
+            .slice(0, 18);
+          setRelatedItems(picked);
+          return;
+        }
+
+        if (item.type === "episode" && item.parentSeriesId) {
+          const seriesId = item.parentSeriesId.replace(/^series_/, "");
+          const info = await getSeriesInfo(seriesId);
+          if (ignore) return;
+
+          const episodes = info.episodes
+            .filter((episode) => episode.id !== item.id)
+            .slice(0, 24);
+          setRelatedItems(episodes);
+          return;
+        }
+
+        setRelatedItems([]);
+      } catch (err: any) {
+        if (ignore) return;
+        setRelatedItems([]);
+        setRelatedError(err?.message || "Failed to load related items.");
+      } finally {
+        if (!ignore) {
+          setRelatedLoading(false);
+        }
+      }
+    }
+
+    loadRelated();
+
     return () => {
       ignore = true;
     };
@@ -284,6 +359,34 @@ export default function PlayerPage() {
             </div>
           )}
         </section>
+      ) : null}
+
+      {(item.type === "live" || item.type === "episode") ? (
+        <Section title={item.type === "live" ? "More channels" : "More episodes"}>
+          {relatedLoading ? <div className="info-box">Loading suggestions...</div> : null}
+          {relatedError ? <div className="error-box">{relatedError}</div> : null}
+
+          {!relatedLoading && !relatedItems.length ? (
+            <div className="empty-state">No related items found.</div>
+          ) : (
+            <div className="media-grid media-grid--compact">
+              {relatedItems.map((related) => (
+                <MediaCard
+                  key={related.id}
+                  item={related}
+                  to={routeForPlayerItem(related)}
+                  subtitle={
+                    related.type === "live"
+                      ? "Live Channel"
+                      : related.type === "episode"
+                        ? `Episode ${related.episodeNum || "-"}`
+                        : related.type.toUpperCase()
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </Section>
       ) : null}
     </div>
   );

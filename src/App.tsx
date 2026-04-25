@@ -10,10 +10,7 @@ import {
   syncAllCatalogs,
   type CatalogSyncProgressEvent,
 } from "./lib/api";
-import {
-  markCatalogRefreshRun,
-  saveCatalogRefreshSettings,
-} from "./lib/userDb";
+import { markCatalogRefreshRun } from "./lib/userDb";
 import HomePage from "./pages/HomePage";
 import CatalogPage from "./pages/CatalogPage";
 import FavoritesPage from "./pages/FavoritesPage";
@@ -38,14 +35,6 @@ const CATALOG_LABELS: Record<CatalogType, string> = {
   movie: "Movies",
   series: "Series",
 };
-
-const REFRESH_OPTIONS = [
-  { days: 0, label: "Off" },
-  { days: 1, label: "Every 1 day" },
-  { days: 3, label: "Every 3 days" },
-  { days: 7, label: "Every 7 days" },
-  { days: 14, label: "Every 14 days" },
-];
 
 function createInitialCatalogSyncState(): Record<CatalogType, CatalogSyncUiState> {
   return {
@@ -73,7 +62,6 @@ function AppShell() {
   const [syncingCatalog, setSyncingCatalog] = useState(false);
   const [syncError, setSyncError] = useState<string>();
   const [lastSyncedAtOverride, setLastSyncedAtOverride] = useState<number>();
-  const [savingRefreshSettings, setSavingRefreshSettings] = useState(false);
 
   const syncAbortRef = useRef<AbortController | null>(null);
   const startupSyncKeyRef = useRef<string>();
@@ -90,12 +78,6 @@ function AppShell() {
     const legacy = library.settings?.playlist;
     return Boolean(legacy?.server && legacy?.username && legacy?.password);
   }, [library.settings?.playlist]);
-
-  const autoRefreshDays = useMemo(() => {
-    const raw = Number(library.settings?.catalogAutoRefreshDays || 0);
-    if (!Number.isFinite(raw)) return 0;
-    return Math.max(0, Math.floor(raw));
-  }, [library.settings?.catalogAutoRefreshDays]);
 
   const lastCatalogRefreshAt = useMemo(() => {
     const fromSettings = Number(library.settings?.catalogLastRefreshAt || 0);
@@ -116,7 +98,7 @@ function AppShell() {
   }, []);
 
   const runCatalogSync = useCallback(
-    async (reason: "startup" | "manual" | "interval") => {
+    async (reason: "startup" | "manual") => {
       if (!uid) return;
       if (syncAbortRef.current) return;
 
@@ -198,53 +180,9 @@ function AppShell() {
     void runCatalogSync("startup");
   }, [uid, hasCredentials, showPlaylistManager, playlistKey, runCatalogSync]);
 
-  useEffect(() => {
-    if (!uid || !hasCredentials || showPlaylistManager) return;
-    if (autoRefreshDays <= 0) return;
-
-    const intervalMs = autoRefreshDays * 24 * 60 * 60 * 1000;
-    const timer = window.setInterval(() => {
-      if (syncAbortRef.current) return;
-
-      const last = lastCatalogRefreshAt || 0;
-      if (!last || Date.now() - last >= intervalMs) {
-        void runCatalogSync("interval");
-      }
-    }, 60 * 1000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [
-    uid,
-    hasCredentials,
-    showPlaylistManager,
-    autoRefreshDays,
-    lastCatalogRefreshAt,
-    runCatalogSync,
-  ]);
-
   const handleManualSync = useCallback(() => {
     void runCatalogSync("manual");
   }, [runCatalogSync]);
-
-  const handleAutoRefreshChange = useCallback(
-    async (daysValue: number) => {
-      if (!uid) return;
-
-      const days = Number.isFinite(daysValue) ? Math.max(0, Math.floor(daysValue)) : 0;
-      setSavingRefreshSettings(true);
-      setSyncError(undefined);
-      try {
-        await saveCatalogRefreshSettings(uid, days);
-      } catch (error: any) {
-        setSyncError(error?.message || "Failed to save auto-update settings.");
-      } finally {
-        setSavingRefreshSettings(false);
-      }
-    },
-    [uid],
-  );
 
   const topbarAction = hasCredentials
     ? {
@@ -303,23 +241,6 @@ function AppShell() {
               </div>
 
               <div className="catalog-sync-controls">
-                <label>
-                  Auto Update
-                  <select
-                    value={autoRefreshDays}
-                    disabled={savingRefreshSettings || syncingCatalog || !uid}
-                    onChange={(event) => {
-                      void handleAutoRefreshChange(Number(event.target.value));
-                    }}
-                  >
-                    {REFRESH_OPTIONS.map((option) => (
-                      <option key={option.days} value={option.days}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
                 <button
                   type="button"
                   className="catalog-sync-btn"

@@ -1,8 +1,11 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import CategoryTabs from "../components/CategoryTabs";
 import MediaCard from "../components/MediaCard";
+import Section from "../components/Section";
 import { useAppContext } from "../context/AppContext";
 import { useCatalog } from "../hooks/useCatalog";
+import { getStreams } from "../lib/api";
 import { formatDate } from "../lib/format";
 import type { CatalogType, ContentItem } from "../types";
 
@@ -38,19 +41,76 @@ export default function CatalogPage({ type, searchQuery }: CatalogPageProps) {
   const { isFavorite, toggleFavoriteItem } = useAppContext();
   const { categories, selectedCategoryId, setSelectedCategoryId, items, loading, error } =
     useCatalog(type, { initialSelection: "firstCategory" });
+  const [globalItems, setGlobalItems] = useState<ContentItem[]>([]);
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalError, setGlobalError] = useState<string>();
 
-  const filtered = useMemo(() => {
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setGlobalLoading(false);
+      setGlobalError(undefined);
+      return;
+    }
+
+    let ignore = false;
+
+    async function loadGlobalItems() {
+      setGlobalLoading(true);
+      setGlobalError(undefined);
+
+      try {
+        const all = await getStreams(type);
+        if (!ignore) {
+          setGlobalItems(all);
+        }
+      } catch (err: any) {
+        if (!ignore) {
+          setGlobalItems([]);
+          setGlobalError(err?.message || "Failed to load all catalog items.");
+        }
+      } finally {
+        if (!ignore) {
+          setGlobalLoading(false);
+        }
+      }
+    }
+
+    loadGlobalItems();
+
+    return () => {
+      ignore = true;
+    };
+  }, [type, searchQuery]);
+
+  const filteredCategoryItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return items;
     return items.filter((item) => item.title.toLowerCase().includes(q));
   }, [items, searchQuery]);
+
+  const filteredGlobalItems = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+
+    return globalItems.filter((item) => item.title.toLowerCase().includes(q));
+  }, [globalItems, searchQuery]);
+
+  const showingGlobalSearch = Boolean(searchQuery.trim());
+  const activeLoading = showingGlobalSearch ? globalLoading : loading;
+  const activeError = showingGlobalSearch ? globalError : error;
+  const displayItems = showingGlobalSearch ? filteredGlobalItems : filteredCategoryItems;
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <h1>{pageMeta[type].title}</h1>
-          <p>{pageMeta[type].description}</p>
+          <p>
+            {showingGlobalSearch
+              ? `Search results across all ${pageMeta[type].title.toLowerCase()} categories.`
+              : pageMeta[type].description}
+          </p>
         </div>
       </div>
 
@@ -60,14 +120,29 @@ export default function CatalogPage({ type, searchQuery }: CatalogPageProps) {
         onSelect={setSelectedCategoryId}
       />
 
-      {loading ? <div className="info-box">Loading {pageMeta[type].title}...</div> : null}
-      {error ? <div className="error-box">{error}</div> : null}
+      {showingGlobalSearch ? (
+        <Section
+          title="Global search"
+          right={
+            <Link className="text-link" to={`/${type === "live" ? "live" : type === "movie" ? "movies" : "series"}`}>
+              Keep browsing by category
+            </Link>
+          }
+        >
+          <div className="info-box">
+            Searching for <strong>{searchQuery.trim()}</strong> across all {pageMeta[type].title}.
+          </div>
+        </Section>
+      ) : null}
 
-      {!loading && !filtered.length ? (
+      {activeLoading ? <div className="info-box">Loading {pageMeta[type].title}...</div> : null}
+      {activeError ? <div className="error-box">{activeError}</div> : null}
+
+      {!activeLoading && !displayItems.length ? (
         <div className="empty-state">No items found for this category/search.</div>
       ) : (
         <div className="media-grid">
-          {filtered.map((item) => (
+          {displayItems.map((item) => (
             <MediaCard
               key={item.id}
               item={item}
