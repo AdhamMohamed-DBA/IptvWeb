@@ -158,6 +158,25 @@ a {
   background: rgba(12, 20, 34, 0.85);
 }
 
+.global-search-panel {
+  margin: 1rem 1.2rem 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.85rem;
+  background: rgba(10, 18, 31, 0.9);
+}
+
+.global-search-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.global-search-head p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .catalog-sync-head {
   display: flex;
   align-items: flex-start;

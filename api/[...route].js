@@ -166,16 +166,9 @@ function parseStreamTarget(rawValue) {
     throw new Error("Missing stream url");
   }
 
-  let decoded = String(rawValue);
-  try {
-    decoded = decodeURIComponent(decoded);
-  } catch {
-    decoded = String(rawValue);
-  }
-
   let parsed;
   try {
-    parsed = new URL(decoded);
+    parsed = new URL(String(rawValue));
   } catch {
     throw new Error("Invalid stream url");
   }
@@ -301,16 +294,25 @@ async function handleStreamProxy(req, res, url) {
   const headers = {};
   if (rangeHeader) {
     headers.Range = rangeHeader;
+  } else if (req.method === "HEAD") {
+    headers.Range = "bytes=0-0";
   }
   if (userAgentHeader) {
     headers["User-Agent"] = userAgentHeader;
   }
 
   const upstream = await fetch(targetUrl.toString(), {
-    method: req.method === "HEAD" ? "HEAD" : "GET",
+    method: "GET",
     headers,
     redirect: "follow",
   });
+
+  if (!upstream.ok) {
+    const body = await upstream.text().catch(() => "");
+    throw new Error(
+      `Upstream stream error ${upstream.status} for ${targetUrl.origin}: ${body.slice(0, 180)}`,
+    );
+  }
 
   await forwardStreamResponse(req, res, upstream, targetUrl);
 }
@@ -455,6 +457,10 @@ function getStatusForError(message) {
     return 400;
   }
 
+  if (value.includes("upstream stream error")) {
+    return 502;
+  }
+
   if (value.includes("misconfigured")) {
     return 500;
   }
@@ -591,7 +597,7 @@ async function handleApi(req, res) {
 
 export const config = {
   runtime: "nodejs",
-  maxDuration: 30,
+  maxDuration: 60,
 };
 
 export default async function handler(req, res) {

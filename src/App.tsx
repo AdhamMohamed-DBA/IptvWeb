@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
+import MediaCard from "./components/MediaCard";
+import Section from "./components/Section";
 import CredentialsGate from "./components/CredentialsGate";
 import { AppProvider, useAppContext } from "./context/AppContext";
 import { useDebouncedValue } from "./hooks/useDebouncedValue";
 import {
   clearCatalogCache,
+  getStreams,
   syncAllCatalogs,
   type CatalogSyncProgressEvent,
 } from "./lib/api";
@@ -16,7 +19,7 @@ import CatalogPage from "./pages/CatalogPage";
 import FavoritesPage from "./pages/FavoritesPage";
 import PlayerPage from "./pages/PlayerPage";
 import SeriesDetailsPage from "./pages/SeriesDetailsPage";
-import type { CatalogType } from "./types";
+import type { CatalogType, ContentItem } from "./types";
 
 interface CatalogSyncUiState {
   progress: number;
@@ -52,6 +55,18 @@ function stageLabel(stage: CatalogSyncUiState["stage"], done: boolean) {
   return "Waiting";
 }
 
+function routeForSearchItem(item: ContentItem) {
+  if (item.type === "series") return `/series/${item.id}`;
+  return `/player/${item.id}`;
+}
+
+function subtitleForSearchItem(item: ContentItem) {
+  if (item.type === "live") return "Live Channel";
+  if (item.type === "movie") return "Movie";
+  if (item.type === "episode") return `Episode ${item.episodeNum || "-"}`;
+  return "Series";
+}
+
 function AppShell() {
   const { uid, loadingAuth, authError, retryAuth, library } = useAppContext();
   const [search, setSearch] = useState("");
@@ -62,6 +77,13 @@ function AppShell() {
   const [syncingCatalog, setSyncingCatalog] = useState(false);
   const [syncError, setSyncError] = useState<string>();
   const [lastSyncedAtOverride, setLastSyncedAtOverride] = useState<number>();
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
+  const [globalSearchError, setGlobalSearchError] = useState<string>();
+  const [globalSearchResults, setGlobalSearchResults] = useState<Record<CatalogType, ContentItem[]>>({
+    live: [],
+    movie: [],
+    series: [],
+  });
 
   const syncAbortRef = useRef<AbortController | null>(null);
   const startupSyncKeyRef = useRef<string>();
@@ -171,6 +193,11 @@ function AppShell() {
 
   const hasCredentials = normalizedPlaylists.length > 0 || hasLegacyPlaylist;
   const playlistKey = `${uid || "guest"}:${library.settings?.activePlaylistId || "legacy"}`;
+  const activeSearchQuery = debouncedSearch.trim();
+
+  const globalSearchTotal = useMemo(() => {
+    return CATALOG_TYPES.reduce((sum, type) => sum + globalSearchResults[type].length, 0);
+  }, [globalSearchResults]);
 
   useEffect(() => {
     if (!uid || !hasCredentials || showPlaylistManager) return;
@@ -179,6 +206,68 @@ function AppShell() {
     startupSyncKeyRef.current = playlistKey;
     void runCatalogSync("startup");
   }, [uid, hasCredentials, showPlaylistManager, playlistKey, runCatalogSync]);
+
+  useEffect(() => {
+    const query = activeSearchQuery.toLowerCase();
+
+    if (!uid || !hasCredentials || showPlaylistManager || !query) {
+      setGlobalSearchLoading(false);
+      setGlobalSearchError(undefined);
+      setGlobalSearchResults({
+        live: [],
+        movie: [],
+        series: [],
+      });
+      return;
+    }
+
+    let ignore = false;
+
+    async function loadGlobalSearch() {
+      setGlobalSearchLoading(true);
+      setGlobalSearchError(undefined);
+
+      try {
+        const [liveItems, movieItems, seriesItems] = await Promise.all([
+          getStreams("live"),
+          getStreams("movie"),
+          getStreams("series"),
+        ]);
+
+        if (ignore) return;
+
+        const filterItems = (items: ContentItem[]) => {
+          return items
+            .filter((item) => item.title.toLowerCase().includes(query))
+            .slice(0, 24);
+        };
+
+        setGlobalSearchResults({
+          live: filterItems(liveItems),
+          movie: filterItems(movieItems),
+          series: filterItems(seriesItems),
+        });
+      } catch (error: any) {
+        if (ignore) return;
+        setGlobalSearchResults({
+          live: [],
+          movie: [],
+          series: [],
+        });
+        setGlobalSearchError(error?.message || "Failed to search across catalogs.");
+      } finally {
+        if (!ignore) {
+          setGlobalSearchLoading(false);
+        }
+      }
+    }
+
+    loadGlobalSearch();
+
+    return () => {
+      ignore = true;
+    };
+  }, [uid, hasCredentials, showPlaylistManager, playlistKey, activeSearchQuery]);
 
   const handleManualSync = useCallback(() => {
     void runCatalogSync("manual");
@@ -287,6 +376,48 @@ function AppShell() {
 
             {syncError ? <div className="error-box">{syncError}</div> : null}
           </section>
+
+          {activeSearchQuery ? (
+            <section className="global-search-panel">
+              <div className="global-search-head">
+                <h3>Global Search</h3>
+                <p>Showing matches for “{activeSearchQuery}” across live, movies, and series.</p>
+              </div>
+
+              {globalSearchLoading ? (
+                <div className="info-box">Searching all catalogs...</div>
+              ) : null}
+
+              {globalSearchError ? <div className="error-box">{globalSearchError}</div> : null}
+
+              {!globalSearchLoading && !globalSearchError && globalSearchTotal === 0 ? (
+                <div className="empty-state">No results found across all catalogs.</div>
+              ) : null}
+
+              {CATALOG_TYPES.map((type) => {
+                const items = globalSearchResults[type];
+                if (!items.length) return null;
+
+                return (
+                  <Section
+                    key={`global_search_${type}`}
+                    title={`${CATALOG_LABELS[type]} (${items.length})`}
+                  >
+                    <div className="media-grid">
+                      {items.map((item) => (
+                        <MediaCard
+                          key={`search_${type}_${item.id}`}
+                          item={item}
+                          to={routeForSearchItem(item)}
+                          subtitle={subtitleForSearchItem(item)}
+                        />
+                      ))}
+                    </div>
+                  </Section>
+                );
+              })}
+            </section>
+          ) : null}
 
           <Routes>
             <Route path="/" element={<HomePage searchQuery={debouncedSearch} />} />

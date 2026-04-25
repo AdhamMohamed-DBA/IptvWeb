@@ -56,8 +56,12 @@ export default function SeriesDetailsPage({ searchQuery }: SeriesDetailsPageProp
     const episodes = data?.episodes || [];
     const q = searchQuery.trim().toLowerCase();
     if (!q) return episodes;
+
+    const seriesMatches = Boolean(data?.series.title?.toLowerCase().includes(q));
+    if (seriesMatches) return episodes;
+
     return episodes.filter((item) => item.title.toLowerCase().includes(q));
-  }, [data?.episodes, searchQuery]);
+  }, [data?.episodes, data?.series.title, searchQuery]);
 
   const grouped = useMemo(() => {
     const map = new Map<number, ContentItem[]>();

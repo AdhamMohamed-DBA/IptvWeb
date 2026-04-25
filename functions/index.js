@@ -95,16 +95,9 @@ function parseStreamTarget(rawValue) {
     throw new Error("Missing stream url");
   }
 
-  let decoded = String(rawValue);
-  try {
-    decoded = decodeURIComponent(decoded);
-  } catch {
-    decoded = String(rawValue);
-  }
-
   let parsed;
   try {
-    parsed = new URL(decoded);
+    parsed = new URL(String(rawValue));
   } catch {
     throw new Error("Invalid stream url");
   }
@@ -232,16 +225,25 @@ async function handleStreamProxy(req, res) {
   const headers = {};
   if (rawRange) {
     headers.Range = rawRange;
+  } else if (req.method === "HEAD") {
+    headers.Range = "bytes=0-0";
   }
   if (rawUserAgent) {
     headers["User-Agent"] = rawUserAgent;
   }
 
   const upstream = await fetch(targetUrl.toString(), {
-    method: req.method === "HEAD" ? "HEAD" : "GET",
+    method: "GET",
     headers,
     redirect: "follow",
   });
+
+  if (!upstream.ok) {
+    const body = await upstream.text().catch(() => "");
+    throw new Error(
+      `Upstream stream error ${upstream.status} for ${targetUrl.origin}: ${body.slice(0, 180)}`,
+    );
+  }
 
   await forwardStreamResponse(req, res, upstream, targetUrl);
 }
@@ -356,8 +358,14 @@ async function handleApi(req, res) {
     try {
       await handleStreamProxy(req, res);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /upstream stream error/i.test(message)
+        ? 502
+        : /stream url/i.test(message)
+          ? 400
+          : 500;
       logger.error("Stream proxy error", error);
-      res.status(400).json({ error: error.message || "Stream proxy failed" });
+      res.status(status).json({ error: message || "Stream proxy failed" });
     }
     return;
   }
